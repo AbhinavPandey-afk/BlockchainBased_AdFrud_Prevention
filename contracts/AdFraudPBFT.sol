@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-/*
-  AdFraudPBFT.sol
-  - Works on EVM (PBFT/IBFT chains or public chains)
-  - Two click submission flows:
-      1) Direct: registered Gateway calls submitClickGatewayDirect(...)
-      2) Signed: Gateway signs off-chain; any relayer calls submitClickWithSig(...)
-  - Uses OpenZeppelin v4.9.3 imports (pinned)
-*/
-
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
@@ -54,7 +45,8 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
 
     mapping(address => uint256) public stakeOf;
     mapping(uint256 => Campaign) public campaigns;
-    uint256 public nextCampaignId;
+    uint256[] public campaignIds; // ✅ store all campaign IDs
+
     mapping(bytes32 => bool) public usedClickHash;
     mapping(address => uint256) public publisherBalance;
 
@@ -66,7 +58,10 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
     uint256 public maxClickFutureSeconds = 120; // 2 minutes
 
     modifier onlyAdminOrAuditor() {
-        require(hasRole(DEFAULT_ADMIN_ROLE, _msgSender()) || hasRole(AUDITOR_ROLE, _msgSender()), "Not admin/auditor");
+        require(
+            hasRole(DEFAULT_ADMIN_ROLE, _msgSender()) || hasRole(AUDITOR_ROLE, _msgSender()),
+            "Not admin/auditor"
+        );
         _;
     }
 
@@ -91,6 +86,7 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
     function setMaxClickAgeSeconds(uint256 secs) external onlyRole(DEFAULT_ADMIN_ROLE) {
         maxClickAgeSeconds = secs;
     }
+
     function setMaxClickFutureSeconds(uint256 secs) external onlyRole(DEFAULT_ADMIN_ROLE) {
         maxClickFutureSeconds = secs;
     }
@@ -105,7 +101,6 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
     function unstakeGateway(uint256 amount) external nonReentrant onlyRole(GATEWAY_ROLE) {
         require(amount > 0 && amount <= stakeOf[msg.sender], "Invalid amount");
         uint256 remaining = stakeOf[msg.sender] - amount;
-        // either fully unstake or keep >= minGatewayStakeWei
         require(remaining == 0 || remaining >= minGatewayStakeWei, "Below min stake");
         stakeOf[msg.sender] = remaining;
         (bool ok, ) = payable(msg.sender).call{value: amount}("");
@@ -113,7 +108,6 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         emit GatewayUnstaked(msg.sender, amount, remaining);
     }
 
-    // Slash by basis points (bps). 10000 bps = 100%
     function slashGateway(address gateway, uint16 pctBps, bytes32 evidenceCIDHash) external onlyAdminOrAuditor {
         require(gateway != address(0), "Invalid gateway");
         require(pctBps > 0 && pctBps <= 10000, "Bps out of range");
@@ -127,18 +121,26 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
     }
 
     // --- Campaigns ---
-    function createCampaign(uint256 cpcWei, string calldata meta) external payable returns (uint256 id) {
+    function createCampaign(
+        uint256 campaignId,
+        uint256 cpcWei,
+        string calldata meta
+    ) external payable returns (uint256 id) {
         require(cpcWei > 0, "CPC must be > 0");
         require(msg.value > 0, "Initial budget required");
-        id = nextCampaignId++;
-        campaigns[id] = Campaign({
+        require(campaigns[campaignId].advertiser == address(0), "Campaign ID already exists");
+
+        campaigns[campaignId] = Campaign({
             advertiser: msg.sender,
             cpcWei: cpcWei,
             budgetWei: msg.value,
             paused: false,
             meta: meta
         });
-        emit CampaignCreated(id, msg.sender, cpcWei, msg.value, meta);
+
+        campaignIds.push(campaignId); // ✅ store ID
+        emit CampaignCreated(campaignId, msg.sender, cpcWei, msg.value, meta);
+        return campaignId;
     }
 
     function fundCampaign(uint256 campaignId) external payable {
@@ -151,13 +153,19 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
 
     function setCampaignPaused(uint256 campaignId, bool paused) external {
         Campaign storage c = campaigns[campaignId];
-        require(c.advertiser == msg.sender || hasRole(DEFAULT_ADMIN_ROLE, msg.sender), "Not authorized");
+        require(
+            c.advertiser == msg.sender || hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
+            "Not authorized"
+        );
         c.paused = paused;
         emit CampaignPaused(campaignId, paused);
     }
 
+    function getCampaignIds() external view returns (uint256[] memory) {
+        return campaignIds;
+    }
+
     // --- Click submission helpers ---
-    // Include chainId + contract address in hash to avoid cross-contract replay
     function computeClickMessageHash(
         bytes32 clickHash,
         uint256 campaignId,
@@ -166,10 +174,21 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         uint256 timestamp,
         bytes32 metadataCIDHash
     ) public view returns (bytes32) {
-        return keccak256(abi.encodePacked(block.chainid, address(this), "AD_CLICK_V1", clickHash, campaignId, publisher, gateway, timestamp, metadataCIDHash));
+        return keccak256(
+            abi.encodePacked(
+                block.chainid,
+                address(this),
+                "AD_CLICK_V1",
+                clickHash,
+                campaignId,
+                publisher,
+                gateway,
+                timestamp,
+                metadataCIDHash
+            )
+        );
     }
 
-    // Direct gateway submission (gateway sends tx)
     function submitClickGatewayDirect(
         bytes32 clickHash,
         uint256 campaignId,
@@ -180,8 +199,6 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         _submitClickCore(clickHash, campaignId, publisher, msg.sender, timestamp, metadataCIDHash);
     }
 
-    // Signed submission: gateway signs the computeClickMessageHash(...) off-chain.
-    // Any relayer can call this with the signature.
     function submitClickWithSig(
         bytes32 clickHash,
         uint256 campaignId,
@@ -191,13 +208,19 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         bytes32 metadataCIDHash,
         bytes calldata signature
     ) external {
-        bytes32 rawHash = computeClickMessageHash(clickHash, campaignId, publisher, gateway, timestamp, metadataCIDHash);
-        bytes32 ethSigned = ECDSA.toEthSignedMessageHash(rawHash); // v4.9.3 supports bytes32 overload
+        bytes32 rawHash = computeClickMessageHash(
+            clickHash,
+            campaignId,
+            publisher,
+            gateway,
+            timestamp,
+            metadataCIDHash
+        );
+        bytes32 ethSigned = ECDSA.toEthSignedMessageHash(rawHash);
         address recovered = ECDSA.recover(ethSigned, signature);
         require(recovered == gateway, "Invalid signature");
         require(hasRole(GATEWAY_ROLE, gateway), "Signer not gateway");
 
-        // timestamp replay protection
         if (timestamp > block.timestamp) {
             require(timestamp - block.timestamp <= maxClickFutureSeconds, "Timestamp too far in future");
         } else {
@@ -207,7 +230,6 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         _submitClickCore(clickHash, campaignId, publisher, gateway, timestamp, metadataCIDHash);
     }
 
-    // core shared logic
     function _submitClickCore(
         bytes32 clickHash,
         uint256 campaignId,
@@ -223,14 +245,13 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         require(!c.paused, "Campaign paused");
         require(c.budgetWei >= c.cpcWei, "Insufficient budget");
 
-        usedClickHash[clickHash] = true; // effects before interactions
+        usedClickHash[clickHash] = true;
         c.budgetWei -= c.cpcWei;
         publisherBalance[publisher] += c.cpcWei;
 
         emit ClickRecorded(clickHash, campaignId, publisher, gateway, c.cpcWei, timestamp, metadataCIDHash);
     }
 
-    // Publisher withdraw
     function withdrawPublisher(uint256 amount) external nonReentrant {
         require(amount > 0 && amount <= publisherBalance[msg.sender], "Invalid amount");
         publisherBalance[msg.sender] -= amount;
@@ -239,19 +260,21 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         emit PublisherWithdrawal(msg.sender, amount);
     }
 
-    // Views
-    function getCampaign(uint256 campaignId) external view returns (
-        address advertiser,
-        uint256 cpcWei,
-        uint256 budgetWei,
-        bool paused,
-        string memory meta
-    ) {
+    function getCampaign(uint256 campaignId)
+        external
+        view
+        returns (
+            address advertiser,
+            uint256 cpcWei,
+            uint256 budgetWei,
+            bool paused,
+            string memory meta
+        )
+    {
         Campaign storage c = campaigns[campaignId];
         return (c.advertiser, c.cpcWei, c.budgetWei, c.paused, c.meta);
     }
 
-    // allow receiving ETH (for funding)
     receive() external payable {}
     fallback() external payable {}
 }

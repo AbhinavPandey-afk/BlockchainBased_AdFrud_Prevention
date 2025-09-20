@@ -13,6 +13,9 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@openzeppelin/contracts": "^4.9.3"
+    "@openzeppelin/contracts": "^4.9.3",
+    "bootstrap": "^5.3.8",
+    "bootstrap-icons": "^1.13.1",
+    "react-bootstrap": "^2.10.10"
   }
 }

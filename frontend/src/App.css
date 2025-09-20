@@ -1,0 +1,132 @@
+.App {
+  text-align: center;
+}
+
+/* 🔹 Glassmorphism base */
+.glass-card {
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+/* 🔹 Neon labels (wallet address, brand) */
+.neon-label {
+  color: #e0e0ff;
+  text-shadow: 0 0 5px #a855f7, 0 0 10px #9333ea, 0 0 20px #6b21a8;
+}
+
+/* 🔹 Wallet row */
+.wallet-row {
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.6rem 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* 🔹 Navbar links hover glow */
+.navbar .nav-link {
+  color: #d1d5db !important;
+  transition: all 0.3s ease-in-out;
+  font-weight: 500;
+}
+
+.navbar .nav-link:hover {
+  color: #a855f7 !important;
+  text-shadow: 0 0 6px #a855f7, 0 0 12px #9333ea;
+  transform: translateY(-1px);
+}
+
+/* 🔹 Active link underline glow */
+.navbar .nav-link.active {
+  color: #a855f7 !important;
+  border-bottom: 2px solid #a855f7;
+  padding-bottom: 2px;
+}
+
+/* 🔹 Primary button styling */
+.btn-primary {
+  background: linear-gradient(135deg, #9333ea, #a855f7);
+  border: none;
+  font-weight: 600;
+  transition: all 0.25s ease-in-out;
+  border-radius: 8px;
+}
+
+.btn-primary:hover {
+  background: linear-gradient(135deg, #a855f7, #c084fc);
+  box-shadow: 0 0 12px #a855f7, 0 0 20px #9333ea;
+}
+
+/* 🔹 Disconnect button (custom class: .btn-disconnect) */
+.btn-disconnect {
+  border: 1.5px solid rgba(168, 85, 247, 0.6);
+  color: #c4b5fd;
+  background: rgba(255, 255, 255, 0.03);
+  font-weight: 500;
+  transition: all 0.3s ease-in-out;
+  border-radius: 8px;
+}
+
+.btn-disconnect:hover {
+  background: rgba(168, 85, 247, 0.15);
+  color: #e9d5ff;
+  border-color: #a855f7;
+  box-shadow: 0 0 10px #a855f7, 0 0 20px #9333ea;
+  transform: translateY(-1px);
+}
+
+/* 🔹 Wallet address badge */
+.wallet-badge {
+  background: rgba(168, 85, 247, 0.15);
+  border: 1px solid rgba(168, 85, 247, 0.4);
+  color: #d8b4fe;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 20px;
+  margin-right: 0.75rem;
+  transition: all 0.3s ease-in-out;
+}
+
+.wallet-badge:hover {
+  box-shadow: 0 0 8px #a855f7, 0 0 16px #9333ea;
+  color: #f3e8ff;
+}
+
+/* 🔹 Keep your old styles */
+.App-logo {
+  height: 40vmin;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .App-logo {
+    animation: App-logo-spin infinite 20s linear;
+  }
+}
+
+.App-header {
+  background-color: #282c34;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(10px + 2vmin);
+  color: white;
+}
+
+.App-link {
+  color: #61dafb;
+}
+
+@keyframes App-logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
