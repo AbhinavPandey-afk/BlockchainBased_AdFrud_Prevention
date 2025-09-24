@@ -106,12 +106,13 @@
 
 // export default Gateway;
 import React, { useState, useEffect } from "react";
-import { Container, Form, Button, Alert, Card, Row, Col } from "react-bootstrap";
+import { Container, Form, Button, Alert, Card, Row, Col, Badge } from "react-bootstrap";
 import { useWallet } from "../context/WalletContext";
 import { ethers } from "ethers";
 import Navbar from "../components/Navbar";
 import Footer from "../components/Footer";
 import SubmitClick from "../components/SubmitClick";
+import "./AdminDashboard.css"; // Use AMOLED styles
 
 const Gateway = () => {
   const { contract, account, connect } = useWallet();
@@ -119,10 +120,21 @@ const Gateway = () => {
   const [unstakeAmount, setUnstakeAmount] = useState("");
   const [msg, setMsg] = useState(null);
   const [availableHashes, setAvailableHashes] = useState([]);
+  const [currentStake, setCurrentStake] = useState("0");
 
   const ensure = async () => {
     if (!account) await connect();
     if (!contract) throw new Error("Contract not available");
+  };
+
+  const fetchStake = async () => {
+    if (!contract || !account) return;
+    try {
+      const stake = await contract.stakeOf(account);
+      setCurrentStake(ethers.utils.formatEther(stake));
+    } catch (e) {
+      console.error("Error fetching stake:", e);
+    }
   };
 
   const stake = async () => {
@@ -133,6 +145,7 @@ const Gateway = () => {
       await tx.wait();
       setMsg("✅ Staked successfully");
       setStakeAmount("");
+      fetchStake();
     } catch (e) {
       setMsg("❌ Error: " + e.message);
     }
@@ -146,6 +159,7 @@ const Gateway = () => {
       await tx.wait();
       setMsg("✅ Unstaked successfully");
       setUnstakeAmount("");
+      fetchStake();
     } catch (e) {
       setMsg("❌ Error: " + e.message);
     }
@@ -155,7 +169,13 @@ const Gateway = () => {
   useEffect(() => {
     const loadHashes = () => {
       const hashes = JSON.parse(localStorage.getItem('availableHashes') || '[]');
-      setAvailableHashes(hashes);
+      // Filter hashes to show more recent ones first and add status indicators
+      const processedHashes = hashes.map(hash => ({
+        ...hash,
+        isRecent: (Date.now() / 1000) - hash.timestamp < 3600, // Last hour
+        age: Math.floor((Date.now() / 1000) - hash.timestamp)
+      }));
+      setAvailableHashes(processedHashes);
     };
 
     // Load initial hashes
@@ -166,6 +186,12 @@ const Gateway = () => {
     
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (contract && account) {
+      fetchStake();
+    }
+  }, [contract, account]);
 
   const clearHash = (index) => {
     const updatedHashes = availableHashes.filter((_, i) => i !== index);
@@ -178,17 +204,38 @@ const Gateway = () => {
     localStorage.setItem('availableHashes', JSON.stringify([]));
   };
 
+  const formatAge = (seconds) => {
+    if (seconds < 60) return `${seconds}s ago`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    return `${Math.floor(seconds / 86400)}d ago`;
+  };
+
   return (
-    <>
+    <div className="d-flex flex-column min-vh-100 amoled-bg text-light">
       <Navbar />
-      <Container>
-        <Row>
+      <Container className="py-5">
+        <h2 className="mb-4 text-center fw-bold neon-cyan display-5">
+          🌐 Gateway Operations
+        </h2>
+        
+        <Row className="g-4 mb-4">
           <Col md={6}>
-            <Card>
-              <Card.Header>⚡ Gateway Staking</Card.Header>
+            <Card className="glass-card border-0 h-100">
               <Card.Body>
+                <Card.Title className="neon-label">⚡ Gateway Staking</Card.Title>
+                
+                <div className="text-center mb-3">
+                  <h4 className="neon-cyan">Current Stake: {currentStake} ETH</h4>
+                </div>
+
                 {msg && (
-                  <Alert variant={msg.includes("✅") ? "success" : "danger"}>
+                  <Alert 
+                    variant={msg.includes("✅") ? "success" : "danger"}
+                    className="glass-alert"
+                    onClose={() => setMsg(null)}
+                    dismissible
+                  >
                     {msg}
                   </Alert>
                 )}
@@ -196,26 +243,41 @@ const Gateway = () => {
                 <Form.Group className="mb-3">
                   <Form.Label>Stake Amount (ETH)</Form.Label>
                   <Form.Control
-                    type="text"
+                    type="number"
+                    step="0.01"
                     value={stakeAmount}
                     onChange={(e) => setStakeAmount(e.target.value)}
                     placeholder="0.0"
+                    className="neon-input"
                   />
                 </Form.Group>
-                <Button variant="success" onClick={stake} className="me-2">
+                <Button 
+                  variant="success" 
+                  onClick={stake} 
+                  className="w-100 mb-3"
+                  disabled={!stakeAmount || parseFloat(stakeAmount) <= 0}
+                >
                   💰 Stake
                 </Button>
 
-                <Form.Group className="mb-3 mt-3">
+                <Form.Group className="mb-3">
                   <Form.Label>Unstake Amount (ETH)</Form.Label>
                   <Form.Control
-                    type="text"
+                    type="number"
+                    step="0.01"
                     value={unstakeAmount}
                     onChange={(e) => setUnstakeAmount(e.target.value)}
                     placeholder="0.0"
+                    className="neon-input"
+                    max={currentStake}
                   />
                 </Form.Group>
-                <Button variant="warning" onClick={unstake}>
+                <Button 
+                  variant="warning" 
+                  onClick={unstake}
+                  className="w-100"
+                  disabled={!unstakeAmount || parseFloat(unstakeAmount) <= 0 || parseFloat(unstakeAmount) > parseFloat(currentStake)}
+                >
                   📤 Unstake
                 </Button>
               </Card.Body>
@@ -223,37 +285,79 @@ const Gateway = () => {
           </Col>
 
           <Col md={6}>
-            <Card>
-              <Card.Header className="d-flex justify-content-between align-items-center">
-                <span>🔗 Available Click Hashes</span>
-                {availableHashes.length > 0 && (
-                  <Button variant="outline-danger" size="sm" onClick={clearAllHashes}>
-                    Clear All
-                  </Button>
-                )}
-              </Card.Header>
+            <Card className="glass-card border-0 h-100">
               <Card.Body>
-                <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                <div className="d-flex justify-content-between align-items-center mb-3">
+                  <Card.Title className="neon-label mb-0">🔗 Available Click Hashes</Card.Title>
+                  {availableHashes.length > 0 && (
+                    <Button variant="outline-danger" size="sm" onClick={clearAllHashes}>
+                      Clear All
+                    </Button>
+                  )}
+                </div>
+                
+                <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
                   {availableHashes.length === 0 ? (
-                    <p className="text-muted">No click hashes available. Visit the published ads page to generate clicks.</p>
+                    <div className="text-center text-muted py-4">
+                      <span style={{ fontSize: '2rem', opacity: 0.5 }}>🔗</span>
+                      <p className="small mt-2">
+                        No click hashes available.<br/>
+                        Visit the published ads page to generate clicks.
+                      </p>
+                    </div>
                   ) : (
                     availableHashes.map((hash, index) => (
-                      <Card key={index} className="mb-2 border-info">
+                      <Card key={index} className="mb-3 glass-list border-0">
                         <Card.Body className="p-3">
-                          <h6 className="text-info mb-1">Click Hash #{index + 1}</h6>
-                          <p className="small mb-1">
-                            <strong>Campaign ID:</strong> {hash.campaignId}<br/>
-                            <strong>Publisher:</strong> {hash.publisherAddress.substring(0, 10)}...<br/>
-                            <strong>CPC:</strong> {hash.cpc} ETH<br/>
-                            <strong>Hash:</strong> <code>{hash.clickHash.substring(0, 30)}...</code>
-                          </p>
-                          <div className="d-flex justify-content-between">
-                            <small className="text-muted">
-                              {new Date(hash.timestamp * 1000).toLocaleTimeString()}
-                            </small>
-                            <Button size="sm" variant="outline-danger" onClick={() => clearHash(index)}>
-                              Remove
+                          <div className="d-flex justify-content-between align-items-start mb-2">
+                            <h6 className="text-info mb-0">
+                              Click Hash #{index + 1}
+                              {hash.isRecent && (
+                                <Badge bg="success" className="ms-2">New</Badge>
+                              )}
+                            </h6>
+                            <Button 
+                              size="sm" 
+                              variant="outline-danger" 
+                              onClick={() => clearHash(index)}
+                            >
+                              ✕
                             </Button>
+                          </div>
+                          
+                          <div className="small mb-2">
+                            <Row>
+                              <Col md={6}>
+                                <div><strong>Campaign ID:</strong> {hash.campaignId}</div>
+                                <div><strong>CPC:</strong> {hash.cpc} ETH</div>
+                              </Col>
+                              <Col md={6}>
+                                <div>
+                                  <strong>Publisher:</strong> 
+                                  <br/>
+                                  <code className="text-warning">
+                                    {hash.publisherAddress.substring(0, 10)}...
+                                    {hash.publisherAddress.substring(hash.publisherAddress.length - 6)}
+                                  </code>
+                                </div>
+                              </Col>
+                            </Row>
+                            <div className="mt-2">
+                              <strong>Hash:</strong> 
+                              <br/>
+                              <code className="text-muted small">
+                                {hash.clickHash.substring(0, 40)}...
+                              </code>
+                            </div>
+                          </div>
+                          
+                          <div className="d-flex justify-content-between align-items-center">
+                            <small className="text-muted">
+                              Generated {formatAge(hash.age)}
+                            </small>
+                            <Badge bg={hash.age < 300 ? "success" : hash.age < 3600 ? "warning" : "secondary"}>
+                              {hash.age < 300 ? "Fresh" : hash.age < 3600 ? "Valid" : "Aging"}
+                            </Badge>
                           </div>
                         </Card.Body>
                       </Card>
@@ -265,15 +369,16 @@ const Gateway = () => {
           </Col>
         </Row>
 
-        <Row className="mt-4">
+        <Row className="g-4">
           <Col>
             <SubmitClick availableHashes={availableHashes} />
           </Col>
         </Row>
       </Container>
       <Footer />
-    </>
+    </div>
   );
 };
 
 export default Gateway;
+

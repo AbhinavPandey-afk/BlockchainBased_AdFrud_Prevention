@@ -21,11 +21,34 @@ const Published = () => {
   const [loading, setLoading] = useState(true);
   const [provider, setProvider] = useState(null);
   const [contract, setContract] = useState(null);
-
-  // Mock publisher address - in production, get from wallet
-  const publisherAddress = "0x1234567890123456789012345678901234567890";
+  const [account, setAccount] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
 
   const contractAddress = process.env.REACT_APP_CONTRACT_ADDRESS;
+
+  // Connect wallet function
+  const connectWallet = async () => {
+    try {
+      if (!window.ethereum) {
+        setMsg("❌ MetaMask not found. Please install MetaMask.");
+        return;
+      }
+
+      const accounts = await window.ethereum.request({
+        method: 'eth_requestAccounts',
+      });
+
+      if (accounts.length > 0) {
+        setAccount(accounts[0]);
+        setIsConnected(true);
+        setMsg("✅ Wallet connected successfully!");
+        setTimeout(() => setMsg(null), 3000);
+      }
+    } catch (error) {
+      console.error("Failed to connect wallet:", error);
+      setMsg("❌ Failed to connect wallet");
+    }
+  };
 
   // Initialize Web3 connection
   useEffect(() => {
@@ -33,12 +56,37 @@ const Published = () => {
       try {
         let ethProvider;
         
-        // Try to use MetaMask if available, otherwise use local RPC
+        // Try to use MetaMask if available
         if (window.ethereum) {
           ethProvider = new ethers.providers.Web3Provider(window.ethereum);
+          
+          // Check if already connected
+          const accounts = await ethProvider.listAccounts();
+          if (accounts.length > 0) {
+            setAccount(accounts[0]);
+            setIsConnected(true);
+          }
+          
+          // Listen for account changes
+          window.ethereum.on('accountsChanged', (accounts) => {
+            if (accounts.length > 0) {
+              setAccount(accounts[0]);
+              setIsConnected(true);
+            } else {
+              setAccount(null);
+              setIsConnected(false);
+            }
+          });
+          
         } else {
           // Fallback to local development node
           ethProvider = new ethers.providers.JsonRpcProvider("http://localhost:8545");
+          // For development, use a default account
+          const accounts = await ethProvider.listAccounts();
+          if (accounts.length > 0) {
+            setAccount(accounts[0]);
+            setIsConnected(true);
+          }
         }
         
         setProvider(ethProvider);
@@ -173,15 +221,20 @@ const Published = () => {
   }, [contract]);
 
   const handleAdClick = async (campaign) => {
+    if (!isConnected || !account) {
+      setMsg("❌ Please connect your wallet first to generate clicks");
+      return;
+    }
+
     try {
       const timestamp = Math.floor(Date.now() / 1000);
-      const clickHash = await generateClickHash(campaign.id, publisherAddress, timestamp);
+      const clickHash = await generateClickHash(campaign.id, account, timestamp);
       
       // Add to available hashes list
       const newHash = {
         clickHash,
         campaignId: campaign.id,
-        publisherAddress,
+        publisherAddress: account, // Use actual connected wallet address
         timestamp,
         cpc: ethers.utils.formatEther(campaign.cpcWei)
       };
@@ -238,11 +291,38 @@ const Published = () => {
 
   return (
     <Container className="py-4">
-      <h1 className="text-center mb-4">Published Advertisements</h1>
+      <div className="d-flex justify-content-between align-items-center mb-4">
+        <h1 className="text-center">Published Advertisements</h1>
+        
+        {/* Wallet Connection Status */}
+        <div className="text-end">
+          {isConnected ? (
+            <div>
+              <Badge bg="success" className="mb-1">
+                ✅ Connected
+              </Badge>
+              <div className="small text-muted">
+                {account?.substring(0, 6)}...{account?.substring(account.length - 4)}
+              </div>
+            </div>
+          ) : (
+            <Button variant="primary" onClick={connectWallet}>
+              Connect Wallet
+            </Button>
+          )}
+        </div>
+      </div>
       
       {msg && (
         <Alert variant={msg.includes("✅") ? "success" : "danger"}>
           {msg}
+        </Alert>
+      )}
+
+      {!isConnected && (
+        <Alert variant="warning" className="mb-4">
+          <h5>⚠️ Wallet Not Connected</h5>
+          <p>Please connect your wallet to generate click hashes with your actual publisher address.</p>
         </Alert>
       )}
 
@@ -340,10 +420,15 @@ const Published = () => {
                             variant="primary"
                             size="lg"
                             onClick={() => handleAdClick(campaign)}
-                            disabled={campaign.paused || parseFloat(ethers.utils.formatEther(campaign.budgetWei)) <= 0}
+                            disabled={!isConnected || campaign.paused || parseFloat(ethers.utils.formatEther(campaign.budgetWei)) <= 0}
                             className="w-100"
                           >
-                            {campaign.paused ? (
+                            {!isConnected ? (
+                              <>
+                                <span className="me-2">🔗</span>
+                                Connect Wallet First
+                              </>
+                            ) : campaign.paused ? (
                               <>
                                 <span className="me-2">⏸️</span>
                                 Campaign Paused
@@ -383,7 +468,12 @@ const Published = () => {
                 {generatedHashes.length === 0 ? (
                   <div className="text-center py-4">
                     <span style={{ fontSize: '2rem', opacity: 0.5 }}>🎯</span>
-                    <p className="text-muted small mt-2">No clicks generated yet.</p>
+                    <p className="text-muted small mt-2">
+                      {!isConnected 
+                        ? "Connect wallet to generate clicks"
+                        : "No clicks generated yet."
+                      }
+                    </p>
                   </div>
                 ) : (
                   generatedHashes.map((hash, index) => (
@@ -395,6 +485,7 @@ const Published = () => {
                       <div className="small mb-2">
                         <div><strong>Campaign:</strong> #{hash.campaignId}</div>
                         <div><strong>CPC:</strong> {hash.cpc} ETH</div>
+                        <div><strong>Publisher:</strong> {hash.publisherAddress.substring(0, 10)}...</div>
                         <div className="font-monospace">
                           <strong>Hash:</strong> {hash.clickHash.substring(0, 20)}...
                         </div>
