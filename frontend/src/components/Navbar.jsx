@@ -24,6 +24,10 @@ const AppNavbar = () => {
           <Navbar.Toggle aria-controls="main-nav" />
           <Navbar.Collapse id="main-nav">
             <Nav className="ms-auto">
+<Nav.Link as={Link} to="/pbft-node" className="nav-link-custom">
+  PBFT Node
+</Nav.Link>
+
               <Nav.Link as={Link} to="/">Home</Nav.Link>
               <Nav.Link as={Link} to="/advertiser">Advertiser</Nav.Link>
               <Nav.Link as={Link} to="/gateway">Gateway</Nav.Link>
