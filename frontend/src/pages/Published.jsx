@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { Container, Card, Button, Row, Col, Alert, Spinner, Badge } from 'react-bootstrap';
+import React, { useState, useEffect, useRef } from 'react';
+import { Container, Card, Button, Row, Col, Alert, Spinner, Badge, Modal } from 'react-bootstrap';
 import { ethers } from 'ethers';
+import ReCAPTCHA from 'react-google-recaptcha';
 import ContractJSON from '../contracts/AdFraudPBFT.json';
 
 // Utility function to generate click hash
@@ -23,8 +24,16 @@ const Published = () => {
   const [contract, setContract] = useState(null);
   const [account, setAccount] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
+  
+  // CAPTCHA related states
+  const [showCaptchaModal, setShowCaptchaModal] = useState(false);
+  const [selectedCampaign, setSelectedCampaign] = useState(null);
+  const [captchaVerified, setCaptchaVerified] = useState(false);
+  const [captchaLoading, setCaptchaLoading] = useState(false);
+  const captchaRef = useRef(null);
 
   const contractAddress = process.env.REACT_APP_CONTRACT_ADDRESS;
+  const recaptchaSiteKey = process.env.REACT_APP_RECAPTCHA_SITE_KEY;
 
   // Connect wallet function
   const connectWallet = async () => {
@@ -56,18 +65,15 @@ const Published = () => {
       try {
         let ethProvider;
         
-        // Try to use MetaMask if available
         if (window.ethereum) {
           ethProvider = new ethers.providers.Web3Provider(window.ethereum);
           
-          // Check if already connected
           const accounts = await ethProvider.listAccounts();
           if (accounts.length > 0) {
             setAccount(accounts[0]);
             setIsConnected(true);
           }
           
-          // Listen for account changes
           window.ethereum.on('accountsChanged', (accounts) => {
             if (accounts.length > 0) {
               setAccount(accounts[0]);
@@ -79,9 +85,7 @@ const Published = () => {
           });
           
         } else {
-          // Fallback to local development node
           ethProvider = new ethers.providers.JsonRpcProvider("http://localhost:8545");
-          // For development, use a default account
           const accounts = await ethProvider.listAccounts();
           if (accounts.length > 0) {
             setAccount(accounts[0]);
@@ -115,7 +119,6 @@ const Published = () => {
       for (let id of campaignIds) {
         try {
           const campaignData = await contract.getCampaign(id);
-          // Only show campaigns with budget > 0 and not paused
           if (campaignData[2].gt(0) && !campaignData[3]) {
             campaignList.push({
               id: id.toString(),
@@ -140,19 +143,17 @@ const Published = () => {
     }
   };
 
-  // Set up real-time event listener
+  // Event listeners (keeping your existing code)
   useEffect(() => {
     if (!contract) return;
 
     const setupEventListeners = async () => {
       try {
-        // Listen for new campaigns
         const campaignCreatedFilter = contract.filters.CampaignCreated();
         
         contract.on(campaignCreatedFilter, (campaignId, advertiser, cpcWei, initialBudget, meta) => {
           console.log("New campaign created:", campaignId.toString());
           
-          // Add new campaign to state if it has budget and is not paused
           if (initialBudget.gt(0)) {
             const newCampaign = {
               id: campaignId.toString(),
@@ -164,14 +165,12 @@ const Published = () => {
             };
             
             setCampaigns(prev => {
-              // Check if campaign already exists
               if (prev.find(c => c.id === newCampaign.id)) return prev;
               return [...prev, newCampaign];
             });
           }
         });
 
-        // Listen for campaign funding
         contract.on("CampaignFunded", (campaignId, amount, newBudget) => {
           setCampaigns(prev => prev.map(c => 
             c.id === campaignId.toString() 
@@ -180,7 +179,6 @@ const Published = () => {
           ));
         });
 
-        // Listen for campaign pause/resume
         contract.on("CampaignPaused", (campaignId, paused) => {
           setCampaigns(prev => prev.map(c => 
             c.id === campaignId.toString() 
@@ -195,73 +193,124 @@ const Published = () => {
     };
 
     setupEventListeners();
-
-    // Cleanup listeners on unmount
     return () => {
       contract.removeAllListeners();
     };
   }, [contract]);
 
-  // Initial load
   useEffect(() => {
     if (contract) {
       fetchCampaigns();
     }
   }, [contract]);
 
-  // Polling fallback (in case events are missed)
   useEffect(() => {
     if (!contract) return;
-
     const interval = setInterval(() => {
       fetchCampaigns();
-    }, 30000); // Poll every 30 seconds
-
+    }, 30000);
     return () => clearInterval(interval);
   }, [contract]);
 
+  // CAPTCHA verification handlers
+  const onCaptchaChange = (value) => {
+    console.log("Captcha value:", value);
+    if (value) {
+      setCaptchaVerified(true);
+      setCaptchaLoading(false);
+    } else {
+      setCaptchaVerified(false);
+    }
+  };
+
+  const onCaptchaExpired = () => {
+    console.log("Captcha expired");
+    setCaptchaVerified(false);
+    setMsg("❌ CAPTCHA expired. Please verify again.");
+  };
+
+  const onCaptchaError = () => {
+    console.log("Captcha error");
+    setCaptchaVerified(false);
+    setMsg("❌ CAPTCHA error. Please try again.");
+  };
+
+  // Updated click handler with CAPTCHA verification
   const handleAdClick = async (campaign) => {
     if (!isConnected || !account) {
       setMsg("❌ Please connect your wallet first to generate clicks");
       return;
     }
 
+    // Show CAPTCHA modal
+    setSelectedCampaign(campaign);
+    setShowCaptchaModal(true);
+    setCaptchaVerified(false);
+    setCaptchaLoading(false);
+  };
+
+  const processCaptchaAndClick = async () => {
+    if (!captchaVerified || !selectedCampaign) {
+      setMsg("❌ Please complete the CAPTCHA verification");
+      return;
+    }
+
     try {
-      const timestamp = Math.floor(Date.now() / 1000);
-      const clickHash = await generateClickHash(campaign.id, account, timestamp);
+      setCaptchaLoading(true);
       
-      // Add to available hashes list
+      const timestamp = Math.floor(Date.now() / 1000);
+      const clickHash = await generateClickHash(selectedCampaign.id, account, timestamp);
+      
       const newHash = {
         clickHash,
-        campaignId: campaign.id,
-        publisherAddress: account, // Use actual connected wallet address
+        campaignId: selectedCampaign.id,
+        publisherAddress: account,
         timestamp,
-        cpc: ethers.utils.formatEther(campaign.cpcWei)
+        cpc: ethers.utils.formatEther(selectedCampaign.cpcWei)
       };
       
-      setGeneratedHashes(prev => [newHash, ...prev.slice(0, 9)]); // Keep only last 10
-      setMsg(`✅ Click registered! Hash: ${clickHash.substring(0, 10)}...`);
+      setGeneratedHashes(prev => [newHash, ...prev.slice(0, 9)]);
+      setMsg(`✅ Click registered successfully! Hash: ${clickHash.substring(0, 10)}...`);
       
-      // Store in localStorage to be picked up by Gateway.jsx
+      // Store in localStorage
       const existingHashes = JSON.parse(localStorage.getItem('availableHashes') || '[]');
-      existingHashes.unshift(newHash); // Add to beginning
-      existingHashes.splice(50); // Keep only last 50 hashes
+      existingHashes.unshift(newHash);
+      existingHashes.splice(50);
       localStorage.setItem('availableHashes', JSON.stringify(existingHashes));
       
-      // Clear message after 3 seconds
-      setTimeout(() => setMsg(null), 3000);
+      // Close modal and reset
+      setShowCaptchaModal(false);
+      setSelectedCampaign(null);
+      setCaptchaVerified(false);
+      
+      // Reset CAPTCHA for next use
+      if (captchaRef.current) {
+        captchaRef.current.reset();
+      }
+      
+      setTimeout(() => setMsg(null), 5000);
       
     } catch (error) {
       setMsg(`❌ Error generating click hash: ${error.message}`);
+    } finally {
+      setCaptchaLoading(false);
     }
   };
 
-  // Updated parseMetadata function to load images from localStorage
+  const handleModalClose = () => {
+    setShowCaptchaModal(false);
+    setSelectedCampaign(null);
+    setCaptchaVerified(false);
+    if (captchaRef.current) {
+      captchaRef.current.reset();
+    }
+  };
+
+  // Existing parseMetadata function
   const parseMetadata = (metaString, campaignId) => {
     try {
       const meta = JSON.parse(metaString);
       
-      // Check if campaign has image stored locally
       if (meta.hasImage) {
         const storedImage = localStorage.getItem(`campaign_image_${campaignId}`);
         if (storedImage) {
@@ -273,7 +322,6 @@ const Published = () => {
       
       return meta;
     } catch {
-      // If meta is not JSON, treat it as simple description
       return { description: metaString, image: null };
     }
   };
@@ -294,7 +342,6 @@ const Published = () => {
       <div className="d-flex justify-content-between align-items-center mb-4">
         <h1 className="text-center">Published Advertisements</h1>
         
-        {/* Wallet Connection Status */}
         <div className="text-end">
           {isConnected ? (
             <div>
@@ -346,7 +393,6 @@ const Published = () => {
                 return (
                   <Col md={6} lg={4} key={campaign.id} className="mb-4">
                     <Card className="h-100 shadow-sm border-0">
-                      {/* Campaign ID Badge */}
                       <div className="position-relative">
                         <Badge 
                           bg="primary" 
@@ -356,7 +402,6 @@ const Published = () => {
                           Campaign #{campaign.id}
                         </Badge>
                         
-                        {/* Ad Image */}
                         <div style={{ height: '200px', overflow: 'hidden' }}>
                           {metadata.image ? (
                             <Card.Img
@@ -393,7 +438,6 @@ const Published = () => {
                       </div>
                       
                       <Card.Body className="d-flex flex-column">
-                        {/* Campaign Title with ID */}
                         <div className="mb-2">
                           <h5 className="card-title mb-1 text-primary">
                             Campaign #{campaign.id}
@@ -406,7 +450,6 @@ const Published = () => {
                           )}
                         </div>
                         
-                        {/* Campaign Stats */}
                         <div className="mb-3">
                           <div className="d-flex justify-content-between small text-muted">
                             <span>CPC: <strong className="text-success">{ethers.utils.formatEther(campaign.cpcWei)} ETH</strong></span>
@@ -414,7 +457,6 @@ const Published = () => {
                           </div>
                         </div>
                         
-                        {/* Click Button */}
                         <div className="mt-auto">
                           <Button 
                             variant="primary"
@@ -440,8 +482,8 @@ const Published = () => {
                               </>
                             ) : (
                               <>
-                                <span className="me-2">👆</span>
-                                Click Ad
+                                <span className="me-2">🛡️</span>
+                                Verify & Click Ad
                               </>
                             )}
                           </Button>
@@ -501,6 +543,71 @@ const Published = () => {
           </Card>
         </Col>
       </Row>
+
+      {/* CAPTCHA Verification Modal */}
+      <Modal show={showCaptchaModal} onHide={handleModalClose} centered>
+        <Modal.Header closeButton>
+          <Modal.Title>
+            <span className="me-2">🛡️</span>
+            Security Verification Required
+          </Modal.Title>
+        </Modal.Header>
+        <Modal.Body className="text-center">
+          <div className="mb-4">
+            <h5>Campaign #{selectedCampaign?.id}</h5>
+            <p className="text-muted">
+              Please complete the security verification to proceed with clicking this ad.
+            </p>
+            <div className="small text-success">
+              <strong>Reward: {selectedCampaign ? ethers.utils.formatEther(selectedCampaign.cpcWei) : '0'} ETH</strong>
+            </div>
+          </div>
+          
+          {recaptchaSiteKey ? (
+            <div className="d-flex justify-content-center mb-4">
+              <ReCAPTCHA
+                ref={captchaRef}
+                sitekey={recaptchaSiteKey}
+                onChange={onCaptchaChange}
+                onExpired={onCaptchaExpired}
+                onError={onCaptchaError}
+              />
+            </div>
+          ) : (
+            <Alert variant="warning">
+              reCAPTCHA site key not configured. Please add REACT_APP_RECAPTCHA_SITE_KEY to your environment variables.
+            </Alert>
+          )}
+          
+          {captchaVerified && (
+            <Alert variant="success">
+              ✅ Verification successful! You can now process the click.
+            </Alert>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={handleModalClose}>
+            Cancel
+          </Button>
+          <Button 
+            variant="success" 
+            onClick={processCaptchaAndClick}
+            disabled={!captchaVerified || captchaLoading}
+          >
+            {captchaLoading ? (
+              <>
+                <Spinner as="span" animation="border" size="sm" role="status" className="me-2" />
+                Processing...
+              </>
+            ) : (
+              <>
+                <span className="me-2">🎯</span>
+                Generate Click Hash
+              </>
+            )}
+          </Button>
+        </Modal.Footer>
+      </Modal>
     </Container>
   );
 };
