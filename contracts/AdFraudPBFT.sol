@@ -1,17 +1,46 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+contract AdFraudPBFT {
+    // Custom ECDSA signature recovery function
+    function recoverSigner(bytes32 ethSignedMessageHash, bytes memory signature) internal pure returns (address) {
+        require(signature.length == 65, "Invalid signature length");
 
-contract AdFraudPBFT is AccessControl, ReentrancyGuard {
-    using ECDSA for bytes32;
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
 
-    // Roles
-    bytes32 public constant GATEWAY_ROLE = keccak256("GATEWAY_ROLE");
-    bytes32 public constant AUDITOR_ROLE = keccak256("AUDITOR_ROLE");
-    bytes32 public constant PBFT_NODE_ROLE = keccak256("PBFT_NODE_ROLE");
+        // solhint-disable-next-line no-inline-assembly
+        assembly {
+            r := mload(add(signature, 32))
+            s := mload(add(signature, 64))
+            v := byte(0, mload(add(signature, 96)))
+        }
+
+        if (v < 27) v += 27;
+
+        require(v == 27 || v == 28, "Invalid signature 'v' value");
+
+        return ecrecover(ethSignedMessageHash, v, r, s);
+    }
+
+    // Role mappings
+    mapping(address => bool) public isAdmin;
+    mapping(address => bool) public isGateway;
+    mapping(address => bool) public isAuditor;
+    mapping(address => bool) public isPbftNode;
+
+    address public admin;
+
+    // Role management events
+    event AdminAssigned(address indexed account);
+    event AdminRevoked(address indexed account);
+    event GatewayAssigned(address indexed account);
+    event GatewayRevoked(address indexed account);
+    event AuditorAssigned(address indexed account);
+    event AuditorRevoked(address indexed account);
+    event PbftNodeAssigned(address indexed account);
+    event PbftNodeRevoked(address indexed account);
 
     // Original Events
     event TreasuryChanged(address indexed oldTreasury, address indexed newTreasury);
@@ -101,70 +130,130 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
     uint256 public maxClickAgeSeconds = 86400; // 1 day
     uint256 public maxClickFutureSeconds = 120; // 2 minutes
 
-    modifier onlyAdminOrAuditor() {
-        require(
-            hasRole(DEFAULT_ADMIN_ROLE, _msgSender()) || hasRole(AUDITOR_ROLE, _msgSender()),
-            "Not admin/auditor"
-        );
+    // Modifiers for role access control
+    modifier onlyAdmin() {
+        require(isAdmin[msg.sender], "Not admin");
         _;
     }
 
-    modifier onlyActivePBFTNode() {
-        require(hasRole(PBFT_NODE_ROLE, msg.sender), "Not PBFT node");
+    modifier onlyGateway() {
+        require(isGateway[msg.sender], "Not gateway");
+        _;
+    }
+
+    modifier onlyAuditor() {
+        require(isAuditor[msg.sender], "Not auditor");
+        _;
+    }
+
+    modifier onlyPbftNode() {
+        require(isPbftNode[msg.sender], "Not PBFT node");
+        _;
+    }
+
+    modifier onlyAdminOrAuditor() {
+        require(isAdmin[msg.sender] || isAuditor[msg.sender], "Not admin or auditor");
+        _;
+    }
+
+    modifier onlyActivePbftNode() {
+        require(isPbftNode[msg.sender], "Not PBFT node");
         require(pbftNodes[msg.sender].isActive, "Node not active");
         _;
     }
 
     constructor(address _treasury) {
         require(_treasury != address(0), "Treasury required");
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        admin = msg.sender;
+        isAdmin[admin] = true;
         treasury = _treasury;
         emit TreasuryChanged(address(0), _treasury);
     }
 
+    // Role management functions
+    function assignAdmin(address account) external onlyAdmin {
+        isAdmin[account] = true;
+        emit AdminAssigned(account);
+    }
+
+    function revokeAdmin(address account) external onlyAdmin {
+        isAdmin[account] = false;
+        emit AdminRevoked(account);
+    }
+
+    function assignGateway(address account) external onlyAdmin {
+        isGateway[account] = true;
+        emit GatewayAssigned(account);
+    }
+
+    function revokeGateway(address account) external onlyAdmin {
+        isGateway[account] = false;
+        emit GatewayRevoked(account);
+    }
+
+    function assignAuditor(address account) external onlyAdmin {
+        isAuditor[account] = true;
+        emit AuditorAssigned(account);
+    }
+
+    function revokeAuditor(address account) external onlyAdmin {
+        isAuditor[account] = false;
+        emit AuditorRevoked(account);
+    }
+
+    function assignPbftNode(address account) external onlyAdmin {
+        isPbftNode[account] = true;
+        emit PbftNodeAssigned(account);
+    }
+
+    function revokePbftNode(address account) external onlyAdmin {
+        isPbftNode[account] = false;
+        emit PbftNodeRevoked(account);
+    }
+
     // --- Original Admin Functions ---
-    function setMinGatewayStake(uint256 newMin) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setMinGatewayStake(uint256 newMin) external onlyAdmin {
         minGatewayStakeWei = newMin;
     }
 
-    function setTreasury(address newTreasury) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setTreasury(address newTreasury) external onlyAdmin {
         require(newTreasury != address(0), "Zero address");
         emit TreasuryChanged(treasury, newTreasury);
         treasury = newTreasury;
     }
 
-    function setMaxClickAgeSeconds(uint256 secs) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setMaxClickAgeSeconds(uint256 secs) external onlyAdmin {
         maxClickAgeSeconds = secs;
     }
 
-    function setMaxClickFutureSeconds(uint256 secs) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setMaxClickFutureSeconds(uint256 secs) external onlyAdmin {
         maxClickFutureSeconds = secs;
     }
 
     // --- PBFT Configuration Functions ---
-    function setRequiredConsensusPercentage(uint256 percentage) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setRequiredConsensusPercentage(uint256 percentage) external onlyAdmin {
         require(percentage > 50 && percentage <= 100, "Invalid percentage");
         requiredConsensusPercentage = percentage;
     }
 
-    function setConsensusTimeout(uint256 timeoutSeconds) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setConsensusTimeout(uint256 timeoutSeconds) external onlyAdmin {
         consensusTimeoutSeconds = timeoutSeconds;
     }
 
-    function setMinPBFTStake(uint256 minStake) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setMinPBFTStake(uint256 minStake) external onlyAdmin {
         minPBFTStake = minStake;
     }
 
     // --- PBFT Node Management ---
-    function addPBFTNode(address node) 
-        external 
-        payable 
-        onlyRole(DEFAULT_ADMIN_ROLE) 
+    function addPBFTNode(address node)
+        external
+        payable
+        onlyAdmin
     {
         require(node != address(0), "Invalid node address");
         require(msg.value >= minPBFTStake, "Insufficient stake");
         require(!pbftNodes[node].isActive, "Node already active");
-        
+
         pbftNodes[node] = PBFTNode({
             nodeAddress: node,
             isActive: true,
@@ -172,19 +261,22 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
             votesParticipated: 0,
             correctVotes: 0
         });
-        
+
         activeNodes.push(node);
-        _grantRole(PBFT_NODE_ROLE, node);
-        
+
+        isPbftNode[node] = true;
+        emit PbftNodeAssigned(node);
+
         emit PBFTNodeAdded(node, msg.value);
     }
 
-    function removePBFTNode(address node) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function removePBFTNode(address node) external onlyAdmin {
         require(pbftNodes[node].isActive, "Node not active");
-        
+
         pbftNodes[node].isActive = false;
-        _revokeRole(PBFT_NODE_ROLE, node);
-        
+        isPbftNode[node] = false;
+        emit PbftNodeRevoked(node);
+
         // Remove from active nodes array
         for (uint256 i = 0; i < activeNodes.length; i++) {
             if (activeNodes[i] == node) {
@@ -193,30 +285,30 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
                 break;
             }
         }
-        
+
         // Refund stake
         uint256 stake = pbftNodes[node].stake;
         pbftNodes[node].stake = 0;
         (bool ok, ) = payable(node).call{value: stake}("");
         require(ok, "Stake refund failed");
-        
+
         emit PBFTNodeRemoved(node);
     }
 
-    function stakePBFTNode() external payable onlyRole(PBFT_NODE_ROLE) {
+    function stakePBFTNode() external payable onlyPbftNode {
         require(msg.value > 0, "No ETH sent");
         require(pbftNodes[msg.sender].isActive, "Node not active");
         pbftNodes[msg.sender].stake += msg.value;
     }
 
     // --- Original Gateway Functions ---
-    function stakeGateway() external payable onlyRole(GATEWAY_ROLE) {
+    function stakeGateway() external payable onlyGateway {
         require(msg.value > 0, "No ETH sent");
         stakeOf[msg.sender] += msg.value;
         emit GatewayStaked(msg.sender, msg.value, stakeOf[msg.sender]);
     }
 
-    function unstakeGateway(uint256 amount) external nonReentrant onlyRole(GATEWAY_ROLE) {
+    function unstakeGateway(uint256 amount) external onlyGateway {
         require(amount > 0 && amount <= stakeOf[msg.sender], "Invalid amount");
         uint256 remaining = stakeOf[msg.sender] - amount;
         require(remaining == 0 || remaining >= minGatewayStakeWei, "Below min stake");
@@ -272,7 +364,7 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
     function setCampaignPaused(uint256 campaignId, bool paused) external {
         Campaign storage c = campaigns[campaignId];
         require(
-            c.advertiser == msg.sender || hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
+            c.advertiser == msg.sender || isAdmin[msg.sender],
             "Not authorized"
         );
         c.paused = paused;
@@ -286,10 +378,10 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         address publisher,
         uint256 timestamp,
         bytes32 metadataCIDHash
-    ) public onlyRole(GATEWAY_ROLE) returns (bytes32) {
+    ) public onlyGateway returns (bytes32) {
         require(activeNodes.length >= 3, "Insufficient PBFT nodes");
         require(pendingTransactions[clickHash].txHash == bytes32(0), "Transaction already proposed");
-        
+
         // Validate transaction basics
         require(publisher != address(0), "Zero publisher");
         require(!usedClickHash[clickHash], "Duplicate click");
@@ -297,11 +389,11 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         require(c.advertiser != address(0), "Campaign missing");
         require(!c.paused, "Campaign paused");
         require(c.budgetWei >= c.cpcWei, "Insufficient budget");
-        
+
         // Calculate required votes (percentage of active nodes)
         uint256 requiredVotes = (activeNodes.length * requiredConsensusPercentage) / 100;
         if (requiredVotes == 0) requiredVotes = 1;
-        
+
         // Create pending transaction
         PendingTransaction storage pendingTx = pendingTransactions[clickHash];
         pendingTx.txHash = clickHash;
@@ -312,16 +404,16 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         pendingTx.metadataCIDHash = metadataCIDHash;
         pendingTx.requiredVotes = requiredVotes;
         pendingTx.proposalTime = block.timestamp;
-        
+
         pendingTxHashes.push(clickHash);
-        
+
         emit TransactionProposed(clickHash, campaignId, publisher);
         return clickHash;
     }
 
-    function voteOnTransaction(bytes32 txHash, bool approve) 
-        external 
-        onlyActivePBFTNode 
+    function voteOnTransaction(bytes32 txHash, bool approve)
+        external
+        onlyActivePbftNode
     {
         PendingTransaction storage pendingTx = pendingTransactions[txHash];
         require(pendingTx.txHash != bytes32(0), "Transaction not found");
@@ -332,22 +424,22 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
             block.timestamp <= pendingTx.proposalTime + consensusTimeoutSeconds,
             "Voting period expired"
         );
-        
+
         pendingTx.hasVoted[msg.sender] = true;
         pendingTx.voteValue[msg.sender] = approve;
         pendingTx.totalVotes++;
-        
+
         if (approve) {
             pendingTx.approveVotes++;
         } else {
             pendingTx.rejectVotes++;
         }
-        
+
         // Update node statistics
         pbftNodes[msg.sender].votesParticipated++;
-        
+
         emit ConsensusVote(txHash, msg.sender, approve);
-        
+
         // Check if consensus reached
         if (pendingTx.approveVotes >= pendingTx.requiredVotes) {
             pendingTx.consensusReached = true;
@@ -368,15 +460,15 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         require(!pendingTx.executed, "Already executed");
         require(pendingTx.consensusReached, "Consensus not reached");
         require(pendingTx.approveVotes >= pendingTx.requiredVotes, "Insufficient approval votes");
-        
+
         pendingTx.executed = true;
-        
+
         // Execute the click transaction
         usedClickHash[pendingTx.txHash] = true;
         Campaign storage c = campaigns[pendingTx.campaignId];
         c.budgetWei -= c.cpcWei;
         publisherBalance[pendingTx.publisher] += c.cpcWei;
-        
+
         // Update correct vote statistics for nodes that voted to approve
         for (uint256 i = 0; i < activeNodes.length; i++) {
             address node = activeNodes[i];
@@ -384,17 +476,17 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
                 pbftNodes[node].correctVotes++;
             }
         }
-        
+
         emit ClickRecorded(
-            pendingTx.txHash, 
-            pendingTx.campaignId, 
-            pendingTx.publisher, 
-            pendingTx.gateway, 
-            c.cpcWei, 
-            pendingTx.timestamp, 
+            pendingTx.txHash,
+            pendingTx.campaignId,
+            pendingTx.publisher,
+            pendingTx.gateway,
+            c.cpcWei,
+            pendingTx.timestamp,
             pendingTx.metadataCIDHash
         );
-        
+
         emit TransactionExecuted(txHash, pendingTx.campaignId, pendingTx.publisher);
     }
 
@@ -407,12 +499,12 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
             block.timestamp > pendingTx.proposalTime + consensusTimeoutSeconds,
             "Transaction not expired"
         );
-        
+
         if (!pendingTx.consensusReached) {
             pendingTx.consensusReached = true;
             emit ConsensusReached(txHash, false, pendingTx.approveVotes);
         }
-        
+
         // Remove from pending array
         for (uint256 i = 0; i < pendingTxHashes.length; i++) {
             if (pendingTxHashes[i] == txHash) {
@@ -454,7 +546,7 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         address publisher,
         uint256 timestamp,
         bytes32 metadataCIDHash
-    ) external onlyRole(GATEWAY_ROLE) {
+    ) external onlyGateway {
         // For backwards compatibility, directly propose to PBFT
         proposeTransaction(clickHash, campaignId, publisher, timestamp, metadataCIDHash);
     }
@@ -476,10 +568,12 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
             timestamp,
             metadataCIDHash
         );
-        bytes32 ethSigned = ECDSA.toEthSignedMessageHash(rawHash);
-        address recovered = ECDSA.recover(ethSigned, signature);
+        bytes32 ethSignedMessageHash = keccak256(
+            abi.encodePacked("\x19Ethereum Signed Message:\n32", rawHash)
+        );
+        address recovered = recoverSigner(ethSignedMessageHash, signature);
         require(recovered == gateway, "Invalid signature");
-        require(hasRole(GATEWAY_ROLE, gateway), "Signer not gateway");
+        require(isGateway[gateway], "Signer not gateway");
 
         if (timestamp > block.timestamp) {
             require(timestamp - block.timestamp <= maxClickFutureSeconds, "Timestamp too far in future");
@@ -492,9 +586,11 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
     }
 
     // --- Publisher Functions ---
-    function withdrawPublisher(uint256 amount) external nonReentrant {
-        require(amount > 0 && amount <= publisherBalance[msg.sender], "Invalid amount");
-        publisherBalance[msg.sender] -= amount;
+    function withdrawPublisher(uint256 amount) external {
+        uint256 balance = publisherBalance[msg.sender];
+        require(amount > 0 && amount <= balance, "Invalid amount");
+        publisherBalance[msg.sender] = balance - amount;
+
         (bool ok, ) = payable(msg.sender).call{value: amount}("");
         require(ok, "ETH transfer failed");
         emit PublisherWithdrawal(msg.sender, amount);
@@ -528,9 +624,9 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         return pendingTxHashes;
     }
 
-    function getPendingTransactionDetails(bytes32 txHash) 
-        external 
-        view 
+    function getPendingTransactionDetails(bytes32 txHash)
+        external
+        view
         returns (
             uint256 campaignId,
             address publisher,
@@ -542,7 +638,7 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
             bool executed,
             bool consensusReached,
             uint256 proposalTime
-        ) 
+        )
     {
         PendingTransaction storage pendingTx = pendingTransactions[txHash];
         return (
@@ -568,23 +664,23 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         return pendingTransactions[txHash].voteValue[node];
     }
 
-    function getNodeStats(address node) 
-        external 
-        view 
+    function getNodeStats(address node)
+        external
+        view
         returns (
             bool isActive,
             uint256 stake,
             uint256 votesParticipated,
             uint256 correctVotes,
             uint256 accuracyPercentage
-        ) 
+        )
     {
         PBFTNode storage pbftNode = pbftNodes[node];
         uint256 accuracy = 0;
         if (pbftNode.votesParticipated > 0) {
             accuracy = (pbftNode.correctVotes * 100) / pbftNode.votesParticipated;
         }
-        
+
         return (
             pbftNode.isActive,
             pbftNode.stake,
@@ -594,6 +690,8 @@ contract AdFraudPBFT is AccessControl, ReentrancyGuard {
         );
     }
 
+    // Fallback functions to receive ETH
     receive() external payable {}
+
     fallback() external payable {}
 }

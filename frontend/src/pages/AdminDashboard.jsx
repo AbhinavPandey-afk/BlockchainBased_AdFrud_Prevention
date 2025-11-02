@@ -11,19 +11,19 @@ const AdminDashboard = () => {
   const { contract, account, connect } = useWallet();
   const [treasury, setTreasury] = useState("");
   const [msg, setMsg] = useState(null);
-  
+
   // PBFT Node Management States
   const [pendingTransactions, setPendingTransactions] = useState([]);
   const [pbftNodes, setPbftNodes] = useState([]);
   const [newNodeAddress, setNewNodeAddress] = useState("");
   const [nodeStake, setNodeStake] = useState("");
-  
+
   // PBFT Configuration States
   const [consensusPercentage, setConsensusPercentage] = useState("");
   const [consensusTimeout, setConsensusTimeout] = useState("");
   const [minPBFTStake, setMinPBFTStake] = useState("");
 
-  // NEW: Admin Approval States
+  // Admin Approval States (off-chain service)
   const [adminPendingTxs, setAdminPendingTxs] = useState([]);
   const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [selectedTx, setSelectedTx] = useState(null);
@@ -35,7 +35,7 @@ const AdminDashboard = () => {
     if (!contract) throw new Error("Contract not available");
   };
 
-  // Original Treasury Function
+  // Treasury
   const setTreas = async () => {
     try {
       await requireConnected();
@@ -43,21 +43,21 @@ const AdminDashboard = () => {
       await tx.wait();
       setMsg("✅ Treasury updated successfully");
     } catch (e) {
-      setMsg("❌ " + e.message);
+      setMsg("❌ " + (e?.reason || e?.message || String(e)));
     }
   };
 
-  // Fetch pending transactions that need PBFT consensus
+  // Pending transactions that need PBFT consensus
   const fetchPendingTransactions = async () => {
     try {
       await requireConnected();
-      
+
       const pendingHashes = await contract.getPendingTransactionHashes();
       const pending = [];
-      
+
       for (const txHash of pendingHashes) {
         const details = await contract.getPendingTransactionDetails(txHash);
-        
+
         if (!details.executed) {
           pending.push({
             hash: txHash,
@@ -69,78 +69,78 @@ const AdminDashboard = () => {
             totalVotes: details.totalVotes.toString(),
             requiredVotes: details.requiredVotes.toString(),
             consensusReached: details.consensusReached,
-            proposalTime: new Date(details.proposalTime * 1000).toLocaleString()
+            proposalTime: new Date(details.proposalTime * 1000).toLocaleString(),
           });
         }
       }
-      
+
       setPendingTransactions(pending);
     } catch (e) {
       console.error("Error fetching pending transactions:", e);
     }
   };
 
-  // NEW: Fetch transactions awaiting admin approval from backend service
+  // Admin pending transactions (off-chain)
   const fetchAdminPendingTransactions = async () => {
     try {
       const response = await fetch(`${adminServiceUrl}/api/transactions/pending`);
       if (response.ok) {
         const data = await response.json();
         setAdminPendingTxs(data.transactions || []);
-      } else {
-        console.error("Failed to fetch admin pending transactions");
       }
-    } catch (error) {
-      console.error("Error fetching admin pending transactions:", error);
-      // Don't show error if backend service is not running
+    } catch (_) {
+      // ignore if backend is down
     }
   };
 
-  // Fetch active PBFT nodes
+  // PBFT nodes
   const fetchPBFTNodes = async () => {
     try {
       await requireConnected();
-      
+
       const activeNodeAddresses = await contract.getActiveNodes();
       const nodes = [];
-      
+
       for (const nodeAddress of activeNodeAddresses) {
         const nodeStats = await contract.getNodeStats(nodeAddress);
-        
+
         nodes.push({
           address: nodeAddress,
           isActive: nodeStats.isActive,
           stake: ethers.utils.formatEther(nodeStats.stake),
           votesParticipated: nodeStats.votesParticipated.toString(),
           correctVotes: nodeStats.correctVotes.toString(),
-          accuracyPercentage: nodeStats.accuracyPercentage.toString()
+          accuracyPercentage: nodeStats.accuracyPercentage.toString(),
         });
       }
-      
+
       setPbftNodes(nodes);
     } catch (e) {
       console.error("Error fetching PBFT nodes:", e);
     }
   };
 
-  // Add new PBFT node
   const addPBFTNode = async () => {
-    try {
-      await requireConnected();
-      const tx = await contract.addPBFTNode(newNodeAddress, {
-        value: ethers.utils.parseEther(nodeStake)
-      });
-      await tx.wait();
-      setMsg("✅ PBFT Node added successfully");
-      setNewNodeAddress("");
-      setNodeStake("");
-      fetchPBFTNodes();
-    } catch (e) {
-      setMsg("❌ " + e.message);
+  try {
+    await requireConnected();
+    if (!newNodeAddress) {
+      setMsg("❌ Provide node address");
+      return;
     }
-  };
+    // allow 0 stake
+    const value = nodeStake ? ethers.utils.parseEther(nodeStake) : ethers.BigNumber.from(0);
+    const tx = await contract.addPBFTNode(newNodeAddress, { value });
+    await tx.wait();
+    setMsg("✅ PBFT Node added successfully");
+    setNewNodeAddress("");
+    setNodeStake(""); // keep empty => sends 0 next time
+    fetchPBFTNodes();
+  } catch (e) {
+    setMsg("❌ " + (e?.reason || e?.message || String(e)));
+  }
+};
 
-  // Remove PBFT node
+
   const removePBFTNode = async (nodeAddress) => {
     try {
       await requireConnected();
@@ -149,45 +149,56 @@ const AdminDashboard = () => {
       setMsg("✅ PBFT Node removed successfully");
       fetchPBFTNodes();
     } catch (e) {
-      setMsg("❌ " + e.message);
+      setMsg("❌ " + (e?.reason || e?.message || String(e)));
     }
   };
 
-  // Update PBFT Configuration functions
+  // PBFT config
   const updateConsensusPercentage = async () => {
     try {
       await requireConnected();
-      const tx = await contract.setRequiredConsensusPercentage(consensusPercentage);
+      const pct = parseInt(consensusPercentage);
+      if (!(pct > 50 && pct <= 100)) {
+        setMsg("❌ Percentage must be >50 and <=100");
+        return;
+      }
+      const tx = await contract.setRequiredConsensusPercentage(pct);
       await tx.wait();
       setMsg("✅ Consensus percentage updated successfully");
     } catch (e) {
-      setMsg("❌ " + e.message);
+      setMsg("❌ " + (e?.reason || e?.message || String(e)));
     }
   };
 
   const updateConsensusTimeout = async () => {
     try {
       await requireConnected();
-      const tx = await contract.setConsensusTimeout(consensusTimeout);
+      const secs = parseInt(consensusTimeout);
+      if (!(secs > 0)) {
+        setMsg("❌ Timeout must be positive");
+        return;
+      }
+      const tx = await contract.setConsensusTimeout(secs);
       await tx.wait();
       setMsg("✅ Consensus timeout updated successfully");
     } catch (e) {
-      setMsg("❌ " + e.message);
+      setMsg("❌ " + (e?.reason || e?.message || String(e)));
     }
   };
 
   const updateMinPBFTStake = async () => {
     try {
       await requireConnected();
-      const tx = await contract.setMinPBFTStake(ethers.utils.parseEther(minPBFTStake));
+      const value = ethers.utils.parseEther(minPBFTStake || "0");
+      const tx = await contract.setMinPBFTStake(value);
       await tx.wait();
       setMsg("✅ Minimum PBFT stake updated successfully");
     } catch (e) {
-      setMsg("❌ " + e.message);
+      setMsg("❌ " + (e?.reason || e?.message || String(e)));
     }
   };
 
-  // Cleanup expired transactions
+  // Cleanup expired
   const cleanupExpiredTransaction = async (txHash) => {
     try {
       await requireConnected();
@@ -196,30 +207,28 @@ const AdminDashboard = () => {
       setMsg("✅ Expired transaction cleaned up");
       fetchPendingTransactions();
     } catch (e) {
-      setMsg("❌ " + e.message);
+      setMsg("❌ " + (e?.reason || e?.message || String(e)));
     }
   };
 
-  // NEW: Handle admin approval modal
+  // Admin approval modal handlers
   const handleAdminApproval = (tx) => {
     setSelectedTx(tx);
     setShowApprovalModal(true);
   };
 
-  // NEW: Submit admin approval (approve/reject)
   const submitAdminDecision = async (decision) => {
     if (!selectedTx) return;
-    
+
     setApprovalLoading(true);
     try {
       await requireConnected();
-      
-      // Get signer from MetaMask
+
       const provider = new ethers.providers.Web3Provider(window.ethereum);
       const signer = provider.getSigner();
       const adminAddress = await signer.getAddress();
 
-      // Get current nonce from backend (for replay protection)
+      // nonce from backend
       let nonce = 0;
       try {
         const nonceResponse = await fetch(`${adminServiceUrl}/api/admin/nonce/${adminAddress}`);
@@ -227,61 +236,56 @@ const AdminDashboard = () => {
           const nonceData = await nonceResponse.json();
           nonce = nonceData.nonce || 0;
         }
-      } catch (e) {
-        console.log("Using default nonce 0");
+      } catch {
+        // ignore, default 0
       }
 
-      // Create message hash (matching backend logic)
       const messageHash = ethers.utils.solidityKeccak256(
-        ['string', 'string', 'address', 'uint256'],
-        ['ADMIN_APPROVAL_V1', selectedTx.id, adminAddress, nonce]
+        ["string", "string", "address", "uint256"],
+        ["ADMIN_APPROVAL_V1", selectedTx.id, adminAddress, nonce]
       );
 
-      // Sign the message
       const signature = await signer.signMessage(ethers.utils.arrayify(messageHash));
 
-      // Submit approval to backend service
       const response = await fetch(`${adminServiceUrl}/api/transactions/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           transactionId: selectedTx.id,
           adminSignature: signature,
           adminAddress,
-          decision
-        })
+          decision,
+        }),
       });
 
       const result = await response.json();
-      
+
       if (result.success) {
         setMsg(`✅ Transaction ${decision}d successfully!`);
         setShowApprovalModal(false);
         setSelectedTx(null);
-        fetchAdminPendingTransactions(); // Refresh admin pending list
-        fetchPendingTransactions(); // Refresh PBFT pending list
+        fetchAdminPendingTransactions();
+        fetchPendingTransactions();
       } else {
         setMsg(`❌ Error: ${result.error}`);
       }
-
     } catch (error) {
-      console.error('Admin approval failed:', error);
+      console.error("Admin approval failed:", error);
       setMsg(`❌ Failed to ${decision} transaction: ${error.message}`);
     } finally {
       setApprovalLoading(false);
     }
   };
 
-  // NEW: Get transaction status badge
+  // UI helpers
   const getStatusBadge = (status) => {
     const statusConfig = {
-      'PENDING_ADMIN_APPROVAL': { bg: 'warning', text: '⏳ Awaiting Admin' },
-      'ADMIN_APPROVED': { bg: 'success', text: '✅ Approved' },
-      'ADMIN_REJECTED': { bg: 'danger', text: '❌ Rejected' },
-      'EXECUTED': { bg: 'info', text: '🚀 Executed' }
+      PENDING_ADMIN_APPROVAL: { bg: "warning", text: "⏳ Awaiting Admin" },
+      ADMIN_APPROVED: { bg: "success", text: "✅ Approved" },
+      ADMIN_REJECTED: { bg: "danger", text: "❌ Rejected" },
+      EXECUTED: { bg: "info", text: "🚀 Executed" },
     };
-    
-    const config = statusConfig[status] || { bg: 'secondary', text: status };
+    const config = statusConfig[status] || { bg: "secondary", text: status };
     return <Badge bg={config.bg}>{config.text}</Badge>;
   };
 
@@ -289,22 +293,22 @@ const AdminDashboard = () => {
     if (contract) {
       fetchPendingTransactions();
       fetchPBFTNodes();
-      fetchAdminPendingTransactions(); // NEW: Fetch admin pending
-      
-      // Set up real-time listeners for blockchain events
+      fetchAdminPendingTransactions();
+
+      // Blockchain listeners
       const proposedFilter = contract.filters.TransactionProposed();
       const consensusFilter = contract.filters.ConsensusReached();
       const nodeAddedFilter = contract.filters.PBFTNodeAdded();
       const nodeRemovedFilter = contract.filters.PBFTNodeRemoved();
-      
+
       contract.on(proposedFilter, fetchPendingTransactions);
       contract.on(consensusFilter, fetchPendingTransactions);
       contract.on(nodeAddedFilter, fetchPBFTNodes);
       contract.on(nodeRemovedFilter, fetchPBFTNodes);
-      
-      // Set up polling for admin service (since it's off-chain)
-      const adminPollingInterval = setInterval(fetchAdminPendingTransactions, 30000); // Every 30s
-      
+
+      // Backend polling
+      const adminPollingInterval = setInterval(fetchAdminPendingTransactions, 30000);
+
       return () => {
         contract.off(proposedFilter, fetchPendingTransactions);
         contract.off(consensusFilter, fetchPendingTransactions);
@@ -318,7 +322,7 @@ const AdminDashboard = () => {
   return (
     <div className="d-flex flex-column min-vh-100 amoled-bg text-light">
       <Navbar />
-      
+
       <Container className="py-5">
         <h2 className="mb-4 text-center fw-bold neon-cyan display-5">
           ⚙️ Admin Dashboard - PBFT Network + Admin Approval
@@ -326,10 +330,10 @@ const AdminDashboard = () => {
         <p className="text-center text-muted mb-5">
           Manage PBFT consensus nodes, monitor transaction validation, and provide final admin approval.
         </p>
-        
+
         {msg && (
           <Alert
-            variant={msg.startsWith("✅") ? "success" : "danger"}
+            variant={msg.startsWith("✅") ? "success" : msg.startsWith("⏳") ? "info" : "danger"}
             className="glass-alert text-center fw-semibold"
             onClose={() => setMsg(null)}
             dismissible
@@ -338,7 +342,7 @@ const AdminDashboard = () => {
           </Alert>
         )}
 
-        {/* NEW: Admin Approval Section (Top Priority) */}
+        {/* Admin Approval */}
         <Row className="g-4 mb-4">
           <Col md={12}>
             <Card className="glass-card border-0 border-warning">
@@ -346,7 +350,7 @@ const AdminDashboard = () => {
                 <Card.Title className="neon-label text-warning">
                   🔐 Transactions Awaiting Admin Signature ({adminPendingTxs.length})
                 </Card.Title>
-                
+
                 {adminPendingTxs.length === 0 ? (
                   <div className="text-center text-muted py-4">
                     <p>✅ No transactions pending admin approval</p>
@@ -368,22 +372,18 @@ const AdminDashboard = () => {
                     <tbody>
                       {adminPendingTxs.map((tx) => (
                         <tr key={tx.id} className="table-warning">
-                          <td className="font-monospace">
-                            {tx.id.substring(0, 12)}...
-                          </td>
+                          <td className="font-monospace">{tx.id.substring(0, 12)}...</td>
                           <td>#{tx.campaignId}</td>
-                          <td className="font-monospace">
-                            {tx.publisher.substring(0, 8)}...
-                          </td>
+                          <td className="font-monospace">{tx.publisher.substring(0, 8)}...</td>
                           <td>
                             <Badge bg="success">
-                              ✅ {tx.pbftConsensus?.approveVotes || 'N/A'} Nodes Approved
+                              ✅ {tx.pbftConsensus?.approveVotes || "N/A"} Nodes Approved
                             </Badge>
                           </td>
                           <td>{new Date(tx.submittedAt).toLocaleString()}</td>
                           <td>{getStatusBadge(tx.status)}</td>
                           <td>
-                            {tx.status === 'PENDING_ADMIN_APPROVAL' && (
+                            {tx.status === "PENDING_ADMIN_APPROVAL" && (
                               <div className="btn-group" role="group">
                                 <Button
                                   variant="success"
@@ -406,9 +406,10 @@ const AdminDashboard = () => {
           </Col>
         </Row>
 
-        {/* First Row: Role Assignment and Treasury */}
+        {/* Role Assignment + Treasury */}
         <Row className="g-4 mb-4">
           <Col md={6}>
+            {/* Ensure this component uses assignGateway/assignAuditor/assignPbftNode/assignAdmin */}
             <RoleAssignment />
           </Col>
           <Col md={6}>
@@ -433,7 +434,7 @@ const AdminDashboard = () => {
           </Col>
         </Row>
 
-        {/* PBFT Configuration */}
+        {/* PBFT Config */}
         <Row className="g-4 mb-4">
           <Col md={4}>
             <Card className="glass-card border-0">
@@ -451,8 +452,8 @@ const AdminDashboard = () => {
                     className="neon-input"
                   />
                 </Form.Group>
-                <Button 
-                  className="btn btn-secondary w-100" 
+                <Button
+                  className="btn btn-secondary w-100"
                   onClick={updateConsensusPercentage}
                   disabled={!consensusPercentage}
                 >
@@ -475,8 +476,8 @@ const AdminDashboard = () => {
                     className="neon-input"
                   />
                 </Form.Group>
-                <Button 
-                  className="btn btn-secondary w-100" 
+                <Button
+                  className="btn btn-secondary w-100"
                   onClick={updateConsensusTimeout}
                   disabled={!consensusTimeout}
                 >
@@ -500,8 +501,8 @@ const AdminDashboard = () => {
                     className="neon-input"
                   />
                 </Form.Group>
-                <Button 
-                  className="btn btn-secondary w-100" 
+                <Button
+                  className="btn btn-secondary w-100"
                   onClick={updateMinPBFTStake}
                   disabled={!minPBFTStake}
                 >
@@ -512,14 +513,13 @@ const AdminDashboard = () => {
           </Col>
         </Row>
 
-        {/* PBFT Node Management */}
+        {/* PBFT Nodes */}
         <Row className="g-4 mb-4">
           <Col md={12}>
             <Card className="glass-card border-0">
               <Card.Body>
                 <Card.Title className="neon-label">🔗 PBFT Node Management</Card.Title>
-                
-                {/* Add New Node Form */}
+
                 <Row className="mb-3">
                   <Col md={6}>
                     <Form.Group>
@@ -547,8 +547,8 @@ const AdminDashboard = () => {
                     </Form.Group>
                   </Col>
                   <Col md={2} className="d-flex align-items-end">
-                    <Button 
-                      onClick={addPBFTNode} 
+                    <Button
+                      onClick={addPBFTNode}
                       className="btn btn-success w-100"
                       disabled={!newNodeAddress || !nodeStake}
                     >
@@ -556,8 +556,7 @@ const AdminDashboard = () => {
                     </Button>
                   </Col>
                 </Row>
-                
-                {/* Active Nodes Table */}
+
                 <Table striped bordered hover variant="dark" className="mt-3">
                   <thead>
                     <tr>
@@ -576,9 +575,14 @@ const AdminDashboard = () => {
                         <td>{parseFloat(node.stake).toFixed(2)}</td>
                         <td>{node.votesParticipated}</td>
                         <td>
-                          <Badge 
-                            bg={parseInt(node.accuracyPercentage) >= 80 ? "success" : 
-                                parseInt(node.accuracyPercentage) >= 60 ? "warning" : "danger"}
+                          <Badge
+                            bg={
+                              parseInt(node.accuracyPercentage) >= 80
+                                ? "success"
+                                : parseInt(node.accuracyPercentage) >= 60
+                                ? "warning"
+                                : "danger"
+                            }
                           >
                             {node.accuracyPercentage}%
                           </Badge>
@@ -589,8 +593,8 @@ const AdminDashboard = () => {
                           </Badge>
                         </td>
                         <td>
-                          <Button 
-                            variant="danger" 
+                          <Button
+                            variant="danger"
                             size="sm"
                             onClick={() => removePBFTNode(node.address)}
                             disabled={!node.isActive}
@@ -602,7 +606,7 @@ const AdminDashboard = () => {
                     ))}
                   </tbody>
                 </Table>
-                
+
                 {pbftNodes.length === 0 && (
                   <div className="text-center text-muted py-4">
                     No PBFT nodes configured
@@ -613,7 +617,7 @@ const AdminDashboard = () => {
           </Col>
         </Row>
 
-        {/* Pending Transactions Requiring Consensus */}
+        {/* PBFT Pending */}
         <Row className="g-4">
           <Col md={12}>
             <Card className="glass-card border-0">
@@ -634,13 +638,15 @@ const AdminDashboard = () => {
                   </thead>
                   <tbody>
                     {pendingTransactions.map((tx, index) => {
-                      const approveProgress = parseInt(tx.requiredVotes) > 0 
-                        ? (parseInt(tx.approveVotes) / parseInt(tx.requiredVotes)) * 100 
-                        : 0;
-                      const rejectProgress = parseInt(tx.requiredVotes) > 0 
-                        ? (parseInt(tx.rejectVotes) / parseInt(tx.requiredVotes)) * 100 
-                        : 0;
-                      
+                      const approveProgress =
+                        parseInt(tx.requiredVotes) > 0
+                          ? (parseInt(tx.approveVotes) / parseInt(tx.requiredVotes)) * 100
+                          : 0;
+                      const rejectProgress =
+                        parseInt(tx.requiredVotes) > 0
+                          ? (parseInt(tx.rejectVotes) / parseInt(tx.requiredVotes)) * 100
+                          : 0;
+
                       return (
                         <tr key={index}>
                           <td>{tx.hash.substring(0, 10)}...{tx.hash.substring(tx.hash.length - 8)}</td>
@@ -650,19 +656,19 @@ const AdminDashboard = () => {
                           <td>
                             <div className="mb-1">
                               <small>Approve: {tx.approveVotes}/{tx.requiredVotes}</small>
-                              <div className="progress" style={{height: '6px'}}>
-                                <div 
-                                  className="progress-bar bg-success" 
-                                  style={{width: `${Math.min(approveProgress, 100)}%`}}
+                              <div className="progress" style={{ height: "6px" }}>
+                                <div
+                                  className="progress-bar bg-success"
+                                  style={{ width: `${Math.min(approveProgress, 100)}%` }}
                                 ></div>
                               </div>
                             </div>
                             <div>
                               <small>Reject: {tx.rejectVotes}/{tx.requiredVotes}</small>
-                              <div className="progress" style={{height: '6px'}}>
-                                <div 
-                                  className="progress-bar bg-danger" 
-                                  style={{width: `${Math.min(rejectProgress, 100)}%`}}
+                              <div className="progress" style={{ height: "6px" }}>
+                                <div
+                                  className="progress-bar bg-danger"
+                                  style={{ width: `${Math.min(rejectProgress, 100)}%` }}
                                 ></div>
                               </div>
                             </div>
@@ -675,8 +681,8 @@ const AdminDashboard = () => {
                           <td>{tx.proposalTime}</td>
                           <td>
                             {!tx.consensusReached && (
-                              <Button 
-                                variant="outline-warning" 
+                              <Button
+                                variant="outline-warning"
                                 size="sm"
                                 onClick={() => cleanupExpiredTransaction(tx.hash)}
                               >
@@ -689,7 +695,7 @@ const AdminDashboard = () => {
                     })}
                   </tbody>
                 </Table>
-                
+
                 {pendingTransactions.length === 0 && (
                   <div className="text-center text-muted py-4">
                     No pending transactions requiring consensus
@@ -701,7 +707,7 @@ const AdminDashboard = () => {
         </Row>
       </Container>
 
-      {/* NEW: Admin Approval Modal */}
+      {/* Admin Approval Modal */}
       <Modal show={showApprovalModal} onHide={() => setShowApprovalModal(false)} centered size="lg">
         <Modal.Header closeButton className="bg-dark text-light">
           <Modal.Title>🔐 Admin Transaction Review</Modal.Title>
@@ -732,7 +738,7 @@ const AdminDashboard = () => {
                     <td><strong>PBFT Consensus:</strong></td>
                     <td>
                       <Badge bg="success">
-                        ✅ {selectedTx.pbftConsensus?.approveVotes || 'N/A'} nodes approved
+                        ✅ {selectedTx.pbftConsensus?.approveVotes || "N/A"} nodes approved
                       </Badge>
                     </td>
                   </tr>
@@ -742,11 +748,11 @@ const AdminDashboard = () => {
                   </tr>
                 </tbody>
               </Table>
-              
+
               <Alert variant="info">
                 <h6>🔒 Admin Signature Required</h6>
                 <p className="mb-0">
-                  This transaction has passed PBFT consensus validation. As an admin, you need to 
+                  This transaction has passed PBFT consensus validation. As an admin, you need to
                   provide your cryptographic signature to authorize final execution on the blockchain.
                 </p>
               </Alert>
@@ -767,18 +773,10 @@ const AdminDashboard = () => {
           <Button variant="secondary" onClick={() => setShowApprovalModal(false)} disabled={approvalLoading}>
             Cancel
           </Button>
-          <Button 
-            variant="danger" 
-            onClick={() => submitAdminDecision('reject')}
-            disabled={approvalLoading}
-          >
+          <Button variant="danger" onClick={() => submitAdminDecision("reject")} disabled={approvalLoading}>
             {approvalLoading ? <Spinner animation="border" size="sm" /> : "❌ Reject"}
           </Button>
-          <Button 
-            variant="success" 
-            onClick={() => submitAdminDecision('approve')}
-            disabled={approvalLoading}
-          >
+          <Button variant="success" onClick={() => submitAdminDecision("approve")} disabled={approvalLoading}>
             {approvalLoading ? <Spinner animation="border" size="sm" /> : "✅ Sign & Approve"}
           </Button>
         </Modal.Footer>

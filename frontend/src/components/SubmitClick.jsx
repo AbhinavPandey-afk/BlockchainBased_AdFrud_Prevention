@@ -1,146 +1,3 @@
-// import React, { useState, useEffect } from "react";
-// import { Form, Button, Alert, Card } from "react-bootstrap";
-// import { useWallet } from "../context/WalletContext";
-// import { ethers } from "ethers";
-
-// const SubmitClick = () => {
-//   const { contract, account, connect } = useWallet();
-//   const [clickHash, setClickHash] = useState("");
-//   const [campaignId, setCampaignId] = useState("");
-//   const [publisher, setPublisher] = useState("");
-//   const [metadataCIDHash, setMetadataCIDHash] = useState("");
-//   const [msg, setMsg] = useState(null);
-//   const [isPaused, setIsPaused] = useState(false);
-
-//   // --- Check if campaign is paused ---
-//   const checkCampaignPaused = async (id) => {
-//     if (!contract || !id) return;
-//     try {
-//       const campaign = await contract.getCampaign(id);
-//       setIsPaused(campaign[3]); // campaign[3] is the paused boolean
-//     } catch (e) {
-//       console.error("Error fetching campaign:", e.message);
-//     }
-//   };
-
-//   useEffect(() => {
-//     checkCampaignPaused(campaignId);
-//   }, [campaignId, contract]);
-
-//   const submitClick = async () => {
-//     try {
-//       if (!account) await connect();
-//       if (!contract) throw new Error("Contract not available");
-
-//       if (!clickHash || !campaignId || !publisher) {
-//         setMsg("Error: Please fill all click submission fields");
-//         return;
-//       }
-
-//       if (isPaused) {
-//         setMsg("❌ Campaign is currently paused");
-//         return;
-//       }
-
-//       const timestamp = Math.floor(Date.now() / 1000);
-
-//       // Handle bytes32 properly
-//       const clickHashBytes = clickHash.startsWith("0x") ? clickHash : ethers.utils.formatBytes32String(clickHash);
-//       const metadataBytes = metadataCIDHash
-//         ? (metadataCIDHash.startsWith("0x") ? metadataCIDHash : ethers.utils.formatBytes32String(metadataCIDHash))
-//         : ethers.constants.HashZero;
-
-//       const tx = await contract.submitClickGatewayDirect(
-//         clickHashBytes,
-//         campaignId,
-//         publisher,
-//         timestamp,
-//         metadataBytes
-//       );
-
-//       await tx.wait();
-//       setMsg("✅ Click submitted successfully");
-//     } catch (e) {
-//       // Check if error is due to paused campaign
-//       if (e.message.includes("Campaign paused")) {
-//         setMsg("❌ Campaign is currently paused");
-//       } else {
-//         setMsg("❌ Error: " + e.message);
-//       }
-//     }
-//   };
-
-//   return (
-//     <Card className="glass-card border-0 h-100 mt-4">
-//       <Card.Body>
-//         <Card.Title className="neon-label">🖱 Submit Click</Card.Title>
-
-//         {msg && (
-//           <Alert
-//             variant={msg.startsWith("❌") ? "danger" : "success"}
-//             className="glass-alert"
-//           >
-//             {msg}
-//           </Alert>
-//         )}
-
-//         <Form.Group className="mb-3">
-//           <Form.Label>Click Hash</Form.Label>
-//           <Form.Control
-//             type="text"
-//             placeholder="Enter click hash"
-//             value={clickHash}
-//             onChange={(e) => setClickHash(e.target.value)}
-//             className="neon-input"
-//           />
-//         </Form.Group>
-
-//         <Form.Group className="mb-3">
-//           <Form.Label>Campaign ID</Form.Label>
-//           <Form.Control
-//             type="text"
-//             placeholder="Enter campaign ID"
-//             value={campaignId}
-//             onChange={(e) => setCampaignId(e.target.value)}
-//             className="neon-input"
-//           />
-//         </Form.Group>
-
-//         <Form.Group className="mb-3">
-//           <Form.Label>Publisher Address</Form.Label>
-//           <Form.Control
-//             type="text"
-//             placeholder="Enter publisher address"
-//             value={publisher}
-//             onChange={(e) => setPublisher(e.target.value)}
-//             className="neon-input"
-//           />
-//         </Form.Group>
-
-//         <Form.Group className="mb-3">
-//           <Form.Label>Metadata CID Hash (optional)</Form.Label>
-//           <Form.Control
-//             type="text"
-//             placeholder="Enter metadata CID hash"
-//             value={metadataCIDHash}
-//             onChange={(e) => setMetadataCIDHash(e.target.value)}
-//             className="neon-input"
-//           />
-//         </Form.Group>
-
-//         <Button
-//           className="btn btn-primary w-100"
-//           onClick={submitClick}
-//           disabled={!clickHash || !campaignId || !publisher || isPaused}
-//         >
-//           {isPaused ? "Campaign Paused" : "Submit Click"}
-//         </Button>
-//       </Card.Body>
-//     </Card>
-//   );
-// };
-
-// export default SubmitClick;
 import React, { useState, useEffect } from "react";
 import { Form, Button, Alert, Card, Dropdown } from "react-bootstrap";
 import { useWallet } from "../context/WalletContext";
@@ -155,14 +12,31 @@ const SubmitClick = ({ availableHashes = [] }) => {
   const [msg, setMsg] = useState(null);
   const [isPaused, setIsPaused] = useState(false);
 
-  // Check if campaign is paused
+  const showMsg = (text) => {
+    setMsg(text);
+    // auto clear success/info after 4s
+    if (text.startsWith("✅") || text.startsWith("⏳")) {
+      setTimeout(() => setMsg(null), 4000);
+    }
+  };
+
+  // Check if campaign is paused and exists
   const checkCampaignPaused = async (id) => {
     if (!contract || !id) return;
     try {
       const campaign = await contract.getCampaign(id);
-      setIsPaused(campaign[3]); // campaign[3] is the paused boolean
+      // campaign tuple: [advertiser, cpcWei, budgetWei, paused, meta]
+      const advertiser = campaign[0];
+      const paused = campaign[3];
+      if (advertiser === ethers.constants.AddressZero) {
+        setIsPaused(true); // treat missing as paused/blocked
+        return;
+      }
+      setIsPaused(Boolean(paused));
     } catch (e) {
-      console.error("Error fetching campaign:", e.message);
+      console.error("Error fetching campaign:", e?.message || e);
+      // on error, don't block the form, but be conservative
+      setIsPaused(false);
     }
   };
 
@@ -174,7 +48,7 @@ const SubmitClick = ({ availableHashes = [] }) => {
     setClickHash(hashData.clickHash);
     setCampaignId(hashData.campaignId);
     setPublisher(hashData.publisherAddress);
-    setMetadataCIDHash(""); // Reset metadata
+    setMetadataCIDHash(""); // reset metadata
   };
 
   const submitClick = async () => {
@@ -183,23 +57,44 @@ const SubmitClick = ({ availableHashes = [] }) => {
       if (!contract) throw new Error("Contract not available");
 
       if (!clickHash || !campaignId || !publisher) {
-        setMsg("❌ Error: Please fill all click submission fields");
+        showMsg("❌ Error: Please fill all click submission fields");
         return;
       }
 
+      // Gateway role check (prevents Not gateway revert)
+      if (typeof contract.isGateway === "function") {
+        const gw = await contract.isGateway(account);
+        if (!gw) {
+          showMsg("❌ Connected wallet is not a Gateway. Ask Admin to assign Gateway role.");
+          return;
+        }
+      }
+
+      // Paused campaign prevention
+      await checkCampaignPaused(campaignId);
       if (isPaused) {
-        setMsg("❌ Campaign is currently paused");
+        showMsg("❌ Campaign is currently paused");
         return;
       }
 
       const timestamp = Math.floor(Date.now() / 1000);
 
-      // Handle bytes32 properly
-      const clickHashBytes = clickHash.startsWith("0x") ? clickHash : ethers.utils.formatBytes32String(clickHash);
+      // Normalize bytes32 for clickHash and metadataCIDHash
+      const clickHashBytes = clickHash.startsWith("0x")
+        ? clickHash
+        : ethers.utils.formatBytes32String(clickHash);
+
       const metadataBytes = metadataCIDHash
         ? (metadataCIDHash.startsWith("0x") ? metadataCIDHash : ethers.utils.formatBytes32String(metadataCIDHash))
         : ethers.constants.HashZero;
 
+      // Optional: sanity on publisher address
+      if (!ethers.utils.isAddress(publisher)) {
+        showMsg("❌ Invalid publisher address");
+        return;
+      }
+
+      // Submit via Gateway-direct path (contract will route to PBFT)
       const tx = await contract.submitClickGatewayDirect(
         clickHashBytes,
         campaignId,
@@ -207,29 +102,37 @@ const SubmitClick = ({ availableHashes = [] }) => {
         timestamp,
         metadataBytes
       );
+      showMsg("⏳ Submitting click... waiting for confirmation");
       await tx.wait();
 
-      setMsg("✅ Click submitted successfully");
-      
+      showMsg("✅ Click submitted successfully");
+
       // Clear the form
+      const oldHash = clickHash;
       setClickHash("");
       setCampaignId("");
       setPublisher("");
       setMetadataCIDHash("");
 
-      // Remove the hash from localStorage
-      const existingHashes = JSON.parse(localStorage.getItem('availableHashes') || '[]');
-      const updatedHashes = existingHashes.filter(hash => hash.clickHash !== clickHash);
-      localStorage.setItem('availableHashes', JSON.stringify(updatedHashes));
-
+      // Remove the hash from localStorage if present
+      const existing = JSON.parse(localStorage.getItem("availableHashes") || "[]");
+      const updated = existing.filter((h) => h.clickHash !== oldHash);
+      localStorage.setItem("availableHashes", JSON.stringify(updated));
     } catch (e) {
-      // Check if error is due to paused campaign
-      if (e.message.includes("Campaign paused")) {
-        setMsg("❌ Campaign is currently paused");
-      } else if (e.message.includes("Already used")) {
-        setMsg("❌ Click hash already used");
+      const em = e?.reason || e?.message || String(e);
+
+      if (em.includes("Campaign paused")) {
+        showMsg("❌ Campaign is currently paused");
+      } else if (em.toLowerCase().includes("duplicate click") || em.toLowerCase().includes("already used")) {
+        showMsg("❌ Click hash already used");
+      } else if (em.toLowerCase().includes("campaign missing")) {
+        showMsg("❌ Campaign not found");
+      } else if (em.toLowerCase().includes("not gateway")) {
+        showMsg("❌ This account is not a Gateway. Please switch wallet or ask Admin to assign role.");
+      } else if (em.toLowerCase().includes("insufficient budget")) {
+        showMsg("❌ Campaign has insufficient budget for CPC");
       } else {
-        setMsg("❌ Error: " + e.message);
+        showMsg("❌ Error: " + em);
       }
     }
   };
@@ -239,7 +142,7 @@ const SubmitClick = ({ availableHashes = [] }) => {
       <Card.Header>🖱 Submit Click</Card.Header>
       <Card.Body>
         {msg && (
-          <Alert variant={msg.includes("✅") ? "success" : "danger"}>
+          <Alert variant={msg.includes("✅") ? "success" : msg.includes("⏳") ? "info" : "danger"}>
             {msg}
           </Alert>
         )}
@@ -253,8 +156,8 @@ const SubmitClick = ({ availableHashes = [] }) => {
               </Dropdown.Toggle>
               <Dropdown.Menu>
                 {availableHashes.map((hash, index) => (
-                  <Dropdown.Item 
-                    key={index} 
+                  <Dropdown.Item
+                    key={index}
                     onClick={() => selectHashFromAvailable(hash)}
                   >
                     Campaign #{hash.campaignId} - {hash.cpc} ETH
@@ -273,7 +176,7 @@ const SubmitClick = ({ availableHashes = [] }) => {
             type="text"
             value={clickHash}
             onChange={(e) => setClickHash(e.target.value)}
-            placeholder="0x..."
+            placeholder="0x... or plain text (auto-encoded to bytes32)"
           />
         </Form.Group>
 
@@ -307,8 +210,8 @@ const SubmitClick = ({ availableHashes = [] }) => {
           />
         </Form.Group>
 
-        <Button 
-          variant={isPaused ? "secondary" : "primary"} 
+        <Button
+          variant={isPaused ? "secondary" : "primary"}
           onClick={submitClick}
           disabled={isPaused}
         >

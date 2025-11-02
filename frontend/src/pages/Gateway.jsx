@@ -1,110 +1,3 @@
-// import React, { useState } from "react";
-// import { Container, Form, Button, Alert, Card, Row, Col } from "react-bootstrap";
-// import { useWallet } from "../context/WalletContext";
-// import { ethers } from "ethers";
-// import Navbar from "../components/Navbar";
-// import Footer from "../components/Footer";
-// import SubmitClick from "../components/SubmitClick";
-
-// const Gateway = () => {
-//   const { contract, account, connect } = useWallet();
-//   const [stakeAmount, setStakeAmount] = useState("");
-//   const [unstakeAmount, setUnstakeAmount] = useState("");
-//   const [msg, setMsg] = useState(null);
-
-//   const ensure = async () => {
-//     if (!account) await connect();
-//     if (!contract) throw new Error("Contract not available");
-//   };
-
-//   const stake = async () => {
-//     try {
-//       await ensure();
-//       const value = ethers.utils.parseEther(stakeAmount || "0");
-//       const tx = await contract.stakeGateway({ value });
-//       await tx.wait();
-//       setMsg("Staked successfully");
-//     } catch (e) { setMsg("Error: " + e.message); }
-//   };
-
-//   const unstake = async () => {
-//     try {
-//       await ensure();
-//       const amt = ethers.utils.parseEther(unstakeAmount || "0");
-//       const tx = await contract.unstakeGateway(amt);
-//       await tx.wait();
-//       setMsg("Unstaked successfully");
-//     } catch (e) { setMsg("Error: " + e.message); }
-//   };
-
-//   return (
-//     <div className="d-flex flex-column min-vh-100">
-//       <Navbar />
-//       <Container className="py-5">
-//         <h2>Gateway</h2>
-//         {msg && <Alert variant={msg.startsWith("Error") ? "danger" : "success"} className="glass-alert">{msg}</Alert>}
-
-//         {/* Stake & Unstake side by side */}
-//         <Row className="mb-4">
-//           <Col md={6}>
-//             <Card className="glass-card border-0 h-100">
-//               <Card.Body>
-//                 <Card.Title className="neon-label">💰 Stake Gateway</Card.Title>
-//                 <Form.Group className="mb-3">
-//                   <Form.Label>Amount (ETH)</Form.Label>
-//                   <Form.Control
-//                     type="text"
-//                     placeholder="0.1"
-//                     value={stakeAmount}
-//                     onChange={(e) => setStakeAmount(e.target.value)}
-//                     className="neon-input"
-//                   />
-//                 </Form.Group>
-//                 <Button
-//                   className="btn btn-primary w-100"
-//                   onClick={stake}
-//                   disabled={!stakeAmount}
-//                 >
-//                   Stake
-//                 </Button>
-//               </Card.Body>
-//             </Card>
-//           </Col>
-
-//           <Col md={6}>
-//             <Card className="glass-card border-0 h-100">
-//               <Card.Body>
-//                 <Card.Title className="neon-label">🪙 Unstake Gateway</Card.Title>
-//                 <Form.Group className="mb-3">
-//                   <Form.Label>Amount (ETH)</Form.Label>
-//                   <Form.Control
-//                     type="text"
-//                     placeholder="0.1"
-//                     value={unstakeAmount}
-//                     onChange={(e) => setUnstakeAmount(e.target.value)}
-//                     className="neon-input"
-//                   />
-//                 </Form.Group>
-//                 <Button
-//                   className="btn btn-primary w-100"
-//                   onClick={unstake}
-//                   disabled={!unstakeAmount}
-//                 >
-//                   Unstake
-//                 </Button>
-//               </Card.Body>
-//             </Card>
-//           </Col>
-//         </Row>
-
-//         <SubmitClick />
-//       </Container>
-//       <Footer />
-//     </div>
-//   );
-// };
-
-// export default Gateway;
 import React, { useState, useEffect } from "react";
 import { Container, Form, Button, Alert, Card, Row, Col, Badge } from "react-bootstrap";
 import { useWallet } from "../context/WalletContext";
@@ -121,10 +14,35 @@ const Gateway = () => {
   const [msg, setMsg] = useState(null);
   const [availableHashes, setAvailableHashes] = useState([]);
   const [currentStake, setCurrentStake] = useState("0");
+  const [isGateway, setIsGateway] = useState(false);
+  const [netInfo, setNetInfo] = useState(null);
+  const [codeSnippet, setCodeSnippet] = useState("");
 
   const ensure = async () => {
     if (!account) await connect();
     if (!contract) throw new Error("Contract not available");
+  };
+
+  const debugSnapshot = async (label = "debug") => {
+    try {
+      if (!contract) return;
+      const provider = contract.provider;
+      const network = await provider.getNetwork();
+      const code = await provider.getCode(contract.address);
+      const role = account ? await contract.isGateway(account) : false;
+
+      console.log(`[Gateway:${label}] contract=`, contract.address);
+      console.log(`[Gateway:${label}] account=`, account);
+      console.log(`[Gateway:${label}] network=`, network);
+      console.log(`[Gateway:${label}] code at contract=`, code);
+      console.log(`[Gateway:${label}] isGateway(account)=`, role);
+
+      setNetInfo(network);
+      setCodeSnippet(code);
+      setIsGateway(role);
+    } catch (e) {
+      console.warn("[Gateway:debugSnapshot] error:", e);
+    }
   };
 
   const fetchStake = async () => {
@@ -140,68 +58,102 @@ const Gateway = () => {
   const stake = async () => {
     try {
       await ensure();
+      await debugSnapshot("pre-stake");
+
+      if (!isGateway) {
+        setMsg("❌ This account does not have the Gateway role on the target contract.");
+        return;
+      }
+
       const value = ethers.utils.parseEther(stakeAmount || "0");
+      console.log("[Gateway:stake] sending stakeGateway with value", value.toString());
+
       const tx = await contract.stakeGateway({ value });
+      setMsg("⏳ Staking... waiting for confirmation");
       await tx.wait();
+
       setMsg("✅ Staked successfully");
       setStakeAmount("");
       fetchStake();
     } catch (e) {
-      setMsg("❌ Error: " + e.message);
+      console.error("[Gateway:stake] error:", e);
+      setMsg("❌ Error: " + (e?.reason || e?.message || String(e)));
+    } finally {
+      debugSnapshot("post-stake");
     }
   };
 
   const unstake = async () => {
     try {
       await ensure();
+      await debugSnapshot("pre-unstake");
+
+      if (!isGateway) {
+        setMsg("❌ This account does not have the Gateway role on the target contract.");
+        return;
+      }
+
       const amt = ethers.utils.parseEther(unstakeAmount || "0");
+      console.log("[Gateway:unstake] calling unstakeGateway with", amt.toString());
+
       const tx = await contract.unstakeGateway(amt);
+      setMsg("⏳ Unstaking... waiting for confirmation");
       await tx.wait();
+
       setMsg("✅ Unstaked successfully");
       setUnstakeAmount("");
       fetchStake();
     } catch (e) {
-      setMsg("❌ Error: " + e.message);
+      console.error("[Gateway:unstake] error:", e);
+      setMsg("❌ Error: " + (e?.reason || e?.message || String(e)));
+    } finally {
+      debugSnapshot("post-unstake");
     }
   };
 
   // Load available hashes from localStorage
   useEffect(() => {
     const loadHashes = () => {
-      const hashes = JSON.parse(localStorage.getItem('availableHashes') || '[]');
-      // Filter hashes to show more recent ones first and add status indicators
-      const processedHashes = hashes.map(hash => ({
+      const hashes = JSON.parse(localStorage.getItem("availableHashes") || "[]");
+      const processedHashes = hashes.map((hash) => ({
         ...hash,
         isRecent: (Date.now() / 1000) - hash.timestamp < 3600, // Last hour
-        age: Math.floor((Date.now() / 1000) - hash.timestamp)
+        age: Math.floor((Date.now() / 1000) - hash.timestamp),
       }));
       setAvailableHashes(processedHashes);
     };
 
-    // Load initial hashes
     loadHashes();
-
-    // Set up polling to check for new hashes
     const interval = setInterval(loadHashes, 2000);
-    
     return () => clearInterval(interval);
   }, []);
+
+  const refreshRole = async () => {
+    if (!contract || !account) return;
+    try {
+      const role = await contract.isGateway(account);
+      setIsGateway(role);
+    } catch {}
+  };
 
   useEffect(() => {
     if (contract && account) {
       fetchStake();
+      refreshRole();
+      debugSnapshot("mount");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contract, account]);
 
   const clearHash = (index) => {
     const updatedHashes = availableHashes.filter((_, i) => i !== index);
     setAvailableHashes(updatedHashes);
-    localStorage.setItem('availableHashes', JSON.stringify(updatedHashes));
+    localStorage.setItem("availableHashes", JSON.stringify(updatedHashes));
   };
 
   const clearAllHashes = () => {
     setAvailableHashes([]);
-    localStorage.setItem('availableHashes', JSON.stringify([]));
+    localStorage.setItem("availableHashes", JSON.stringify([]));
   };
 
   const formatAge = (seconds) => {
@@ -215,23 +167,47 @@ const Gateway = () => {
     <div className="d-flex flex-column min-vh-100 amoled-bg text-light">
       <Navbar />
       <Container className="py-5">
-        <h2 className="mb-4 text-center fw-bold neon-cyan display-5">
-          🌐 Gateway Operations
-        </h2>
-        
+        <h2 className="mb-4 text-center fw-bold neon-cyan display-5">🌐 Gateway Operations</h2>
+
+        {/* Debug Snapshot Card */}
+        <Row className="g-4 mb-4">
+          <Col md={12}>
+            <Card className="glass-card border-0">
+              <Card.Body>
+                <Card.Title className="neon-label">🧪 Debug Snapshot</Card.Title>
+                <div className="small">
+                  <div><strong>Contract:</strong> <code>{contract?.address || "-"}</code></div>
+                  <div><strong>Account:</strong> <code>{account || "-"}</code></div>
+                  <div><strong>Network:</strong> <code>{netInfo ? `${netInfo.chainId} / ${netInfo.name}` : "-"}</code></div>
+                  <div>
+                    <strong>Code @ Contract:</strong>{" "}
+                    <code title="First 12 chars">{codeSnippet ? `${codeSnippet.slice(0, 12)}...` : "-"}</code>
+                    <span className="ms-2 text-muted">(0x means wrong address/network)</span>
+                  </div>
+                  <div className="mt-2">
+                    <Badge bg={isGateway ? "success" : "secondary"}>
+                      {isGateway ? "Gateway Role: Granted" : "Gateway Role: Missing"}
+                    </Badge>
+                  </div>
+                </div>
+              </Card.Body>
+            </Card>
+          </Col>
+        </Row>
+
         <Row className="g-4 mb-4">
           <Col md={6}>
             <Card className="glass-card border-0 h-100">
               <Card.Body>
                 <Card.Title className="neon-label">⚡ Gateway Staking</Card.Title>
-                
+
                 <div className="text-center mb-3">
                   <h4 className="neon-cyan">Current Stake: {currentStake} ETH</h4>
                 </div>
 
                 {msg && (
-                  <Alert 
-                    variant={msg.includes("✅") ? "success" : "danger"}
+                  <Alert
+                    variant={msg.includes("✅") ? "success" : msg.includes("⏳") ? "info" : "danger"}
                     className="glass-alert"
                     onClose={() => setMsg(null)}
                     dismissible
@@ -239,7 +215,13 @@ const Gateway = () => {
                     {msg}
                   </Alert>
                 )}
-                
+
+                <div className="text-center mb-2">
+                  <Badge bg={isGateway ? "success" : "secondary"}>
+                    {isGateway ? "Gateway Role: Granted" : "Gateway Role: Missing"}
+                  </Badge>
+                </div>
+
                 <Form.Group className="mb-3">
                   <Form.Label>Stake Amount (ETH)</Form.Label>
                   <Form.Control
@@ -251,11 +233,11 @@ const Gateway = () => {
                     className="neon-input"
                   />
                 </Form.Group>
-                <Button 
-                  variant="success" 
-                  onClick={stake} 
+                <Button
+                  variant="success"
+                  onClick={stake}
                   className="w-100 mb-3"
-                  disabled={!stakeAmount || parseFloat(stakeAmount) <= 0}
+                  disabled={!isGateway || !stakeAmount || parseFloat(stakeAmount) <= 0}
                 >
                   💰 Stake
                 </Button>
@@ -272,11 +254,11 @@ const Gateway = () => {
                     max={currentStake}
                   />
                 </Form.Group>
-                <Button 
-                  variant="warning" 
+                <Button
+                  variant="warning"
                   onClick={unstake}
                   className="w-100"
-                  disabled={!unstakeAmount || parseFloat(unstakeAmount) <= 0 || parseFloat(unstakeAmount) > parseFloat(currentStake)}
+                  disabled={!isGateway || !unstakeAmount || parseFloat(unstakeAmount) <= 0 || parseFloat(unstakeAmount) > parseFloat(currentStake)}
                 >
                   📤 Unstake
                 </Button>
@@ -295,13 +277,14 @@ const Gateway = () => {
                     </Button>
                   )}
                 </div>
-                
-                <div style={{ maxHeight: '400px', overflowY: 'auto' }}>
+
+                <div style={{ maxHeight: "400px", overflowY: "auto" }}>
                   {availableHashes.length === 0 ? (
                     <div className="text-center text-muted py-4">
-                      <span style={{ fontSize: '2rem', opacity: 0.5 }}>🔗</span>
+                      <span style={{ fontSize: "2rem", opacity: 0.5 }}>🔗</span>
                       <p className="small mt-2">
-                        No click hashes available.<br/>
+                        No click hashes available.
+                        <br />
                         Visit the published ads page to generate clicks.
                       </p>
                     </div>
@@ -312,19 +295,13 @@ const Gateway = () => {
                           <div className="d-flex justify-content-between align-items-start mb-2">
                             <h6 className="text-info mb-0">
                               Click Hash #{index + 1}
-                              {hash.isRecent && (
-                                <Badge bg="success" className="ms-2">New</Badge>
-                              )}
+                              {hash.isRecent && <Badge bg="success" className="ms-2">New</Badge>}
                             </h6>
-                            <Button 
-                              size="sm" 
-                              variant="outline-danger" 
-                              onClick={() => clearHash(index)}
-                            >
+                            <Button size="sm" variant="outline-danger" onClick={() => clearHash(index)}>
                               ✕
                             </Button>
                           </div>
-                          
+
                           <div className="small mb-2">
                             <Row>
                               <Col md={6}>
@@ -333,8 +310,8 @@ const Gateway = () => {
                               </Col>
                               <Col md={6}>
                                 <div>
-                                  <strong>Publisher:</strong> 
-                                  <br/>
+                                  <strong>Publisher:</strong>
+                                  <br />
                                   <code className="text-warning">
                                     {hash.publisherAddress.substring(0, 10)}...
                                     {hash.publisherAddress.substring(hash.publisherAddress.length - 6)}
@@ -343,14 +320,14 @@ const Gateway = () => {
                               </Col>
                             </Row>
                             <div className="mt-2">
-                              <strong>Hash:</strong> 
-                              <br/>
+                              <strong>Hash:</strong>
+                              <br />
                               <code className="text-muted small">
                                 {hash.clickHash.substring(0, 40)}...
                               </code>
                             </div>
                           </div>
-                          
+
                           <div className="d-flex justify-content-between align-items-center">
                             <small className="text-muted">
                               Generated {formatAge(hash.age)}
@@ -381,4 +358,3 @@ const Gateway = () => {
 };
 
 export default Gateway;
-
