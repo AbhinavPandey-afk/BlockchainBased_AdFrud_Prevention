@@ -343,7 +343,7 @@ const AdminDashboard = () => {
         )}
 
         {/* Admin Approval */}
-        <Row className="g-4 mb-4">
+        {/* <Row className="g-4 mb-4">
           <Col md={12}>
             <Card className="glass-card border-0 border-warning">
               <Card.Body>
@@ -404,7 +404,7 @@ const AdminDashboard = () => {
               </Card.Body>
             </Card>
           </Col>
-        </Row>
+        </Row> */}
 
         {/* Role Assignment + Treasury */}
         <Row className="g-4 mb-4">
