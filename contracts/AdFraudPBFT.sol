@@ -2,25 +2,17 @@
 pragma solidity ^0.8.19;
 
 contract AdFraudPBFT {
-    // Custom ECDSA signature recovery function
+    // Minimal ECDSA recovery
     function recoverSigner(bytes32 ethSignedMessageHash, bytes memory signature) internal pure returns (address) {
         require(signature.length == 65, "Invalid signature length");
-
-        bytes32 r;
-        bytes32 s;
-        uint8 v;
-
-        // solhint-disable-next-line no-inline-assembly
+        bytes32 r; bytes32 s; uint8 v;
         assembly {
             r := mload(add(signature, 32))
             s := mload(add(signature, 64))
             v := byte(0, mload(add(signature, 96)))
         }
-
         if (v < 27) v += 27;
-
         require(v == 27 || v == 28, "Invalid signature 'v' value");
-
         return ecrecover(ethSignedMessageHash, v, r, s);
     }
 
@@ -30,9 +22,13 @@ contract AdFraudPBFT {
     mapping(address => bool) public isAuditor;
     mapping(address => bool) public isPbftNode;
 
+    // NEW: advertiser/publisher roles
+    mapping(address => bool) public isAdvertiser;
+    mapping(address => bool) public isPublisher;
+
     address public admin;
 
-    // Role management events
+    // Role events
     event AdminAssigned(address indexed account);
     event AdminRevoked(address indexed account);
     event GatewayAssigned(address indexed account);
@@ -41,6 +37,11 @@ contract AdFraudPBFT {
     event AuditorRevoked(address indexed account);
     event PbftNodeAssigned(address indexed account);
     event PbftNodeRevoked(address indexed account);
+    // NEW role events
+    event AdvertiserAssigned(address indexed account);
+    event AdvertiserRevoked(address indexed account);
+    event PublisherAssigned(address indexed account);
+    event PublisherRevoked(address indexed account);
 
     // Original Events
     event TreasuryChanged(address indexed oldTreasury, address indexed newTreasury);
@@ -72,7 +73,7 @@ contract AdFraudPBFT {
     event ConsensusReached(bytes32 indexed txHash, bool approved, uint256 voteCount);
     event TransactionExecuted(bytes32 indexed txHash, uint256 indexed campaignId, address indexed publisher);
 
-    // Original Data Structures
+    // Data structures
     struct Campaign {
         address advertiser;
         uint256 cpcWei;
@@ -81,7 +82,6 @@ contract AdFraudPBFT {
         string meta;
     }
 
-    // PBFT Data Structures
     struct PBFTNode {
         address nodeAddress;
         bool isActive;
@@ -105,32 +105,33 @@ contract AdFraudPBFT {
         bool consensusReached;
         uint256 proposalTime;
         mapping(address => bool) hasVoted;
-        mapping(address => bool) voteValue; // true = approve, false = reject
+        mapping(address => bool) voteValue;
     }
 
-    // Original Storage
+    // Storage
     mapping(address => uint256) public stakeOf;
     mapping(uint256 => Campaign) public campaigns;
     uint256[] public campaignIds;
     mapping(bytes32 => bool) public usedClickHash;
     mapping(address => uint256) public publisherBalance;
 
-    // PBFT Storage
     mapping(address => PBFTNode) public pbftNodes;
     address[] public activeNodes;
     mapping(bytes32 => PendingTransaction) public pendingTransactions;
     bytes32[] public pendingTxHashes;
-    uint256 public requiredConsensusPercentage = 67; // 67% required for consensus
-    uint256 public consensusTimeoutSeconds = 600; // 10 minutes timeout
-    uint256 public minPBFTStake = 1 ether;
 
-    // Original Configuration
+    uint256 public requiredConsensusPercentage = 67;
+    uint256 public consensusTimeoutSeconds = 600;
+
+    // CHANGED: default min PBFT stake set to 0.0000001 ETH
+    uint256 public minPBFTStake = 100_000_000_000; // 1e11 wei = 0.0000001 ether
+
     uint256 public minGatewayStakeWei = 0.5 ether;
     address public treasury;
-    uint256 public maxClickAgeSeconds = 86400; // 1 day
-    uint256 public maxClickFutureSeconds = 120; // 2 minutes
+    uint256 public maxClickAgeSeconds = 86400;
+    uint256 public maxClickFutureSeconds = 120;
 
-    // Modifiers for role access control
+    // Modifiers
     modifier onlyAdmin() {
         require(isAdmin[msg.sender], "Not admin");
         _;
@@ -170,7 +171,7 @@ contract AdFraudPBFT {
         emit TreasuryChanged(address(0), _treasury);
     }
 
-    // Role management functions
+    // Role management
     function assignAdmin(address account) external onlyAdmin {
         isAdmin[account] = true;
         emit AdminAssigned(account);
@@ -211,7 +212,28 @@ contract AdFraudPBFT {
         emit PbftNodeRevoked(account);
     }
 
-    // --- Original Admin Functions ---
+    // NEW: advertiser/publisher role management
+    function assignAdvertiser(address account) external onlyAdmin {
+        isAdvertiser[account] = true;
+        emit AdvertiserAssigned(account);
+    }
+
+    function revokeAdvertiser(address account) external onlyAdmin {
+        isAdvertiser[account] = false;
+        emit AdvertiserRevoked(account);
+    }
+
+    function assignPublisher(address account) external onlyAdmin {
+        isPublisher[account] = true;
+        emit PublisherAssigned(account);
+    }
+
+    function revokePublisher(address account) external onlyAdmin {
+        isPublisher[account] = false;
+        emit PublisherRevoked(account);
+    }
+
+    // Admin config
     function setMinGatewayStake(uint256 newMin) external onlyAdmin {
         minGatewayStakeWei = newMin;
     }
@@ -230,7 +252,7 @@ contract AdFraudPBFT {
         maxClickFutureSeconds = secs;
     }
 
-    // --- PBFT Configuration Functions ---
+    // PBFT configuration
     function setRequiredConsensusPercentage(uint256 percentage) external onlyAdmin {
         require(percentage > 50 && percentage <= 100, "Invalid percentage");
         requiredConsensusPercentage = percentage;
@@ -244,12 +266,8 @@ contract AdFraudPBFT {
         minPBFTStake = minStake;
     }
 
-    // --- PBFT Node Management ---
-    function addPBFTNode(address node)
-        external
-        payable
-        onlyAdmin
-    {
+    // PBFT node management
+    function addPBFTNode(address node) external payable onlyAdmin {
         require(node != address(0), "Invalid node address");
         require(msg.value >= minPBFTStake, "Insufficient stake");
         require(!pbftNodes[node].isActive, "Node already active");
@@ -277,7 +295,6 @@ contract AdFraudPBFT {
         isPbftNode[node] = false;
         emit PbftNodeRevoked(node);
 
-        // Remove from active nodes array
         for (uint256 i = 0; i < activeNodes.length; i++) {
             if (activeNodes[i] == node) {
                 activeNodes[i] = activeNodes[activeNodes.length - 1];
@@ -286,7 +303,6 @@ contract AdFraudPBFT {
             }
         }
 
-        // Refund stake
         uint256 stake = pbftNodes[node].stake;
         pbftNodes[node].stake = 0;
         (bool ok, ) = payable(node).call{value: stake}("");
@@ -296,12 +312,11 @@ contract AdFraudPBFT {
     }
 
     function stakePBFTNode() external payable onlyPbftNode {
-        require(msg.value > 0, "No ETH sent");
         require(pbftNodes[msg.sender].isActive, "Node not active");
         pbftNodes[msg.sender].stake += msg.value;
     }
 
-    // --- Original Gateway Functions ---
+    // Gateway staking
     function stakeGateway() external payable onlyGateway {
         require(msg.value > 0, "No ETH sent");
         stakeOf[msg.sender] += msg.value;
@@ -330,7 +345,7 @@ contract AdFraudPBFT {
         emit GatewaySlashed(gateway, slashAmt, evidenceCIDHash);
     }
 
-    // --- Original Campaign Functions ---
+    // Campaigns
     function createCampaign(
         uint256 campaignId,
         uint256 cpcWei,
@@ -363,15 +378,12 @@ contract AdFraudPBFT {
 
     function setCampaignPaused(uint256 campaignId, bool paused) external {
         Campaign storage c = campaigns[campaignId];
-        require(
-            c.advertiser == msg.sender || isAdmin[msg.sender],
-            "Not authorized"
-        );
+        require(c.advertiser == msg.sender || isAdmin[msg.sender], "Not authorized");
         c.paused = paused;
         emit CampaignPaused(campaignId, paused);
     }
 
-    // --- PBFT Transaction Processing ---
+    // PBFT transaction processing
     function proposeTransaction(
         bytes32 clickHash,
         uint256 campaignId,
@@ -382,7 +394,6 @@ contract AdFraudPBFT {
         require(activeNodes.length >= 3, "Insufficient PBFT nodes");
         require(pendingTransactions[clickHash].txHash == bytes32(0), "Transaction already proposed");
 
-        // Validate transaction basics
         require(publisher != address(0), "Zero publisher");
         require(!usedClickHash[clickHash], "Duplicate click");
         Campaign storage c = campaigns[campaignId];
@@ -390,11 +401,9 @@ contract AdFraudPBFT {
         require(!c.paused, "Campaign paused");
         require(c.budgetWei >= c.cpcWei, "Insufficient budget");
 
-        // Calculate required votes (percentage of active nodes)
         uint256 requiredVotes = (activeNodes.length * requiredConsensusPercentage) / 100;
         if (requiredVotes == 0) requiredVotes = 1;
 
-        // Create pending transaction
         PendingTransaction storage pendingTx = pendingTransactions[clickHash];
         pendingTx.txHash = clickHash;
         pendingTx.campaignId = campaignId;
@@ -411,36 +420,25 @@ contract AdFraudPBFT {
         return clickHash;
     }
 
-    function voteOnTransaction(bytes32 txHash, bool approve)
-        external
-        onlyActivePbftNode
-    {
+    function voteOnTransaction(bytes32 txHash, bool approve) external onlyActivePbftNode {
         PendingTransaction storage pendingTx = pendingTransactions[txHash];
         require(pendingTx.txHash != bytes32(0), "Transaction not found");
         require(!pendingTx.executed, "Transaction already executed");
         require(!pendingTx.consensusReached, "Consensus already reached");
         require(!pendingTx.hasVoted[msg.sender], "Already voted");
-        require(
-            block.timestamp <= pendingTx.proposalTime + consensusTimeoutSeconds,
-            "Voting period expired"
-        );
+        require(block.timestamp <= pendingTx.proposalTime + consensusTimeoutSeconds, "Voting period expired");
 
         pendingTx.hasVoted[msg.sender] = true;
         pendingTx.voteValue[msg.sender] = approve;
         pendingTx.totalVotes++;
 
-        if (approve) {
-            pendingTx.approveVotes++;
-        } else {
-            pendingTx.rejectVotes++;
-        }
+        if (approve) pendingTx.approveVotes++;
+        else pendingTx.rejectVotes++;
 
-        // Update node statistics
         pbftNodes[msg.sender].votesParticipated++;
 
         emit ConsensusVote(txHash, msg.sender, approve);
 
-        // Check if consensus reached
         if (pendingTx.approveVotes >= pendingTx.requiredVotes) {
             pendingTx.consensusReached = true;
             _executeTransaction(txHash);
@@ -449,7 +447,6 @@ contract AdFraudPBFT {
             pendingTx.consensusReached = true;
             emit ConsensusReached(txHash, false, pendingTx.rejectVotes);
         } else if (pendingTx.totalVotes == activeNodes.length) {
-            // All nodes voted but no consensus reached
             pendingTx.consensusReached = true;
             emit ConsensusReached(txHash, false, pendingTx.approveVotes);
         }
@@ -463,13 +460,11 @@ contract AdFraudPBFT {
 
         pendingTx.executed = true;
 
-        // Execute the click transaction
         usedClickHash[pendingTx.txHash] = true;
         Campaign storage c = campaigns[pendingTx.campaignId];
         c.budgetWei -= c.cpcWei;
         publisherBalance[pendingTx.publisher] += c.cpcWei;
 
-        // Update correct vote statistics for nodes that voted to approve
         for (uint256 i = 0; i < activeNodes.length; i++) {
             address node = activeNodes[i];
             if (pendingTx.hasVoted[node] && pendingTx.voteValue[node]) {
@@ -490,22 +485,17 @@ contract AdFraudPBFT {
         emit TransactionExecuted(txHash, pendingTx.campaignId, pendingTx.publisher);
     }
 
-    // --- Timeout and Cleanup Functions ---
     function cleanupExpiredTransaction(bytes32 txHash) external {
         PendingTransaction storage pendingTx = pendingTransactions[txHash];
         require(pendingTx.txHash != bytes32(0), "Transaction not found");
         require(!pendingTx.executed, "Transaction already executed");
-        require(
-            block.timestamp > pendingTx.proposalTime + consensusTimeoutSeconds,
-            "Transaction not expired"
-        );
+        require(block.timestamp > pendingTx.proposalTime + consensusTimeoutSeconds, "Transaction not expired");
 
         if (!pendingTx.consensusReached) {
             pendingTx.consensusReached = true;
             emit ConsensusReached(txHash, false, pendingTx.approveVotes);
         }
 
-        // Remove from pending array
         for (uint256 i = 0; i < pendingTxHashes.length; i++) {
             if (pendingTxHashes[i] == txHash) {
                 pendingTxHashes[i] = pendingTxHashes[pendingTxHashes.length - 1];
@@ -515,7 +505,6 @@ contract AdFraudPBFT {
         }
     }
 
-    // --- Original Helper Functions ---
     function computeClickMessageHash(
         bytes32 clickHash,
         uint256 campaignId,
@@ -539,7 +528,6 @@ contract AdFraudPBFT {
         );
     }
 
-    // --- Legacy Direct Submission (for backwards compatibility) ---
     function submitClickGatewayDirect(
         bytes32 clickHash,
         uint256 campaignId,
@@ -547,7 +535,6 @@ contract AdFraudPBFT {
         uint256 timestamp,
         bytes32 metadataCIDHash
     ) external onlyGateway {
-        // For backwards compatibility, directly propose to PBFT
         proposeTransaction(clickHash, campaignId, publisher, timestamp, metadataCIDHash);
     }
 
@@ -568,10 +555,8 @@ contract AdFraudPBFT {
             timestamp,
             metadataCIDHash
         );
-        bytes32 ethSignedMessageHash = keccak256(
-            abi.encodePacked("\x19Ethereum Signed Message:\n32", rawHash)
-        );
-        address recovered = recoverSigner(ethSignedMessageHash, signature);
+        bytes32 ethSigned = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", rawHash));
+        address recovered = recoverSigner(ethSigned, signature);
         require(recovered == gateway, "Invalid signature");
         require(isGateway[gateway], "Signer not gateway");
 
@@ -581,32 +566,23 @@ contract AdFraudPBFT {
             require(block.timestamp - timestamp <= maxClickAgeSeconds, "Timestamp too old");
         }
 
-        // Propose to PBFT instead of direct execution
         proposeTransaction(clickHash, campaignId, publisher, timestamp, metadataCIDHash);
     }
 
-    // --- Publisher Functions ---
     function withdrawPublisher(uint256 amount) external {
         uint256 balance = publisherBalance[msg.sender];
         require(amount > 0 && amount <= balance, "Invalid amount");
         publisherBalance[msg.sender] = balance - amount;
-
         (bool ok, ) = payable(msg.sender).call{value: amount}("");
         require(ok, "ETH transfer failed");
         emit PublisherWithdrawal(msg.sender, amount);
     }
 
-    // --- View Functions ---
+    // Views
     function getCampaign(uint256 campaignId)
         external
         view
-        returns (
-            address advertiser,
-            uint256 cpcWei,
-            uint256 budgetWei,
-            bool paused,
-            string memory meta
-        )
+        returns (address advertiser, uint256 cpcWei, uint256 budgetWei, bool paused, string memory meta)
     {
         Campaign storage c = campaigns[campaignId];
         return (c.advertiser, c.cpcWei, c.budgetWei, c.paused, c.meta);
@@ -667,31 +643,16 @@ contract AdFraudPBFT {
     function getNodeStats(address node)
         external
         view
-        returns (
-            bool isActive,
-            uint256 stake,
-            uint256 votesParticipated,
-            uint256 correctVotes,
-            uint256 accuracyPercentage
-        )
+        returns (bool isActive, uint256 stake, uint256 votesParticipated, uint256 correctVotes, uint256 accuracyPercentage)
     {
         PBFTNode storage pbftNode = pbftNodes[node];
         uint256 accuracy = 0;
         if (pbftNode.votesParticipated > 0) {
             accuracy = (pbftNode.correctVotes * 100) / pbftNode.votesParticipated;
         }
-
-        return (
-            pbftNode.isActive,
-            pbftNode.stake,
-            pbftNode.votesParticipated,
-            pbftNode.correctVotes,
-            accuracy
-        );
+        return (pbftNode.isActive, pbftNode.stake, pbftNode.votesParticipated, pbftNode.correctVotes, accuracy);
     }
 
-    // Fallback functions to receive ETH
     receive() external payable {}
-
     fallback() external payable {}
 }

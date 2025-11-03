@@ -1,128 +1,3 @@
-// import React, { useState } from "react";
-// import { Form, Button, Alert, Card } from "react-bootstrap";
-// import { useWallet } from "../context/WalletContext";
-// import { ethers } from "ethers";
-
-// const CreateCampaign = () => {
-//   const { contract, account, connect } = useWallet();
-//   const [campaignId, setCampaignId] = useState("");
-//   const [cpcEth, setCpcEth] = useState("");
-//   const [initialBudget, setInitialBudget] = useState("");
-//   const [meta, setMeta] = useState("");
-//   const [msg, setMsg] = useState(null);
-
-//   const ensure = async () => {
-//     if (!account) await connect();
-//     if (!contract) throw new Error("Contract not available");
-//   };
-
-//   const createCampaign = async () => {
-//     try {
-//       await ensure();
-
-//       const id = parseInt(campaignId);
-//       const cpcWei = ethers.utils.parseEther(cpcEth || "0");
-//       const initialBudgetWei = ethers.utils.parseEther(initialBudget || "0");
-
-//       if (isNaN(id)) {
-//         setMsg("❌ Campaign ID must be a number");
-//         return;
-//       }
-//       if (cpcWei.lte(0)) {
-//         setMsg("❌ CPC must be greater than 0");
-//         return;
-//       }
-//       if (initialBudgetWei.lte(0)) {
-//         setMsg("❌ Initial budget must be greater than 0");
-//         return;
-//       }
-
-//       const tx = await contract.createCampaign(
-//         id,
-//         cpcWei,
-//         meta,
-//         { value: initialBudgetWei }
-//       );
-
-//       await tx.wait();
-
-//       setMsg("✅ Campaign created successfully!");
-//       setCampaignId("");
-//       setCpcEth("");
-//       setInitialBudget("");
-//       setMeta("");
-//     } catch (e) {
-//       setMsg("❌ Error: " + (e.message || e));
-//     }
-//   };
-
-//   return (
-//     <Card className="glass-card border-0 h-100 mt-4">
-//       <Card.Body>
-//         <Card.Title className="neon-label">📢 Create Campaign</Card.Title>
-
-//         {msg && (
-//           <Alert
-//             variant={msg.startsWith("❌") ? "danger" : "success"}
-//             className="glass-alert"
-//           >
-//             {msg}
-//           </Alert>
-//         )}
-
-//         <Form.Group className="mb-3">
-//           <Form.Label className="neon-label">Campaign ID (unique)</Form.Label>
-//           <Form.Control
-//             className="neon-input"
-//             value={campaignId}
-//             onChange={(e) => setCampaignId(e.target.value)}
-//             placeholder="e.g. 1001"
-//           />
-//         </Form.Group>
-
-//         <Form.Group className="mb-3">
-//           <Form.Label className="neon-label">CPC (ETH)</Form.Label>
-//           <Form.Control
-//             className="neon-input"
-//             value={cpcEth}
-//             onChange={(e) => setCpcEth(e.target.value)}
-//             placeholder="e.g. 0.001"
-//           />
-//         </Form.Group>
-
-//         <Form.Group className="mb-3">
-//           <Form.Label className="neon-label">Initial Budget (ETH)</Form.Label>
-//           <Form.Control
-//             className="neon-input"
-//             value={initialBudget}
-//             onChange={(e) => setInitialBudget(e.target.value)}
-//             placeholder="e.g. 1.0"
-//           />
-//         </Form.Group>
-
-//         <Form.Group className="mb-3">
-//           <Form.Label className="neon-label">Meta (IPFS CID / details)</Form.Label>
-//           <Form.Control
-//             className="neon-input"
-//             value={meta}
-//             onChange={(e) => setMeta(e.target.value)}
-//             placeholder="Campaign details or IPFS link"
-//           />
-//         </Form.Group>
-
-//         <Button
-//           className="btn btn-primary w-100"
-//           onClick={createCampaign}
-//           disabled={!campaignId || !cpcEth || !initialBudget}
-//         >
-//           🚀 Create Campaign
-//         </Button>
-//       </Card.Body>
-//     </Card>
-//   );
-// };
-
-// export default CreateCampaign;
 import React, { useState } from "react";
 import { Form, Button, Alert, Card } from "react-bootstrap";
 import { useWallet } from "../context/WalletContext";
@@ -154,6 +29,17 @@ const CreateCampaign = () => {
 
   const createCampaign = async () => {
     try {
+      await ensure();
+
+      // Role check: advertiser only
+      if (typeof contract.isAdvertiser === "function") {
+        const adv = await contract.isAdvertiser(account);
+        if (!adv) {
+          setMsg("❌ Only an Advertiser can create a campaign. Ask Admin to assign Advertiser role.");
+          return;
+        }
+      }
+
       const id = parseInt(campaignId);
       const cpcWei = ethers.utils.parseEther(cpcEth || "0");
       const initialBudgetWei = ethers.utils.parseEther(initialBudget || "0");
@@ -162,59 +48,64 @@ const CreateCampaign = () => {
         setMsg("❌ Campaign ID must be a number");
         return;
       }
-
       if (cpcWei.lte(0)) {
         setMsg("❌ CPC must be greater than 0");
         return;
       }
-
       if (initialBudgetWei.lte(0)) {
         setMsg("❌ Initial budget must be greater than 0");
         return;
       }
-
-      await ensure();
+      if (initialBudgetWei.lt(cpcWei)) {
+        setMsg("❌ Initial budget must be at least equal to CPC");
+        return;
+      }
 
       setMsg("⏳ Creating campaign...");
 
-      // Store image in localStorage with campaign ID as key
+      // Store image locally (unchanged)
       if (campaignImage) {
         const base64Image = await new Promise((resolve) => {
           const reader = new FileReader();
           reader.onloadend = () => resolve(reader.result);
           reader.readAsDataURL(campaignImage);
         });
-
-        // Store image separately in localStorage
-        localStorage.setItem(`campaign_image_${id}`, JSON.stringify({
-          image: base64Image,
-          imageName: campaignImage.name,
-          timestamp: Date.now()
-        }));
+        localStorage.setItem(
+          `campaign_image_${id}`,
+          JSON.stringify({
+            image: base64Image,
+            imageName: campaignImage.name,
+            timestamp: Date.now(),
+          })
+        );
       }
 
-      // Only store description in blockchain (no image)
+      // Light on-chain metadata
       const lightMeta = JSON.stringify({
         description: meta,
         hasImage: !!campaignImage,
-        timestamp: Date.now()
+        timestamp: Date.now(),
       });
 
-      const tx = await contract.createCampaign(
-        id,
-        cpcWei,
-        lightMeta,  // Light metadata without image
-        { 
+      // Let provider estimate gas; fall back to a ceiling if estimation fails
+      let tx;
+      try {
+        tx = await contract.createCampaign(id, cpcWei, lightMeta, {
           value: initialBudgetWei,
-          gasLimit: 300000
-        }
-      );
-      
+        });
+      } catch (estErr) {
+        // If estimate fails for any reason, try with a conservative gas limit
+        tx = await contract.createCampaign(id, cpcWei, lightMeta, {
+          value: initialBudgetWei,
+          gasLimit: 600000,
+        });
+      }
+
       setMsg("⏳ Transaction submitted. Waiting for confirmation...");
       await tx.wait();
 
       setMsg("✅ Campaign created successfully!");
-      
+
       // Clear form
       setCampaignId("");
       setCpcEth("");
@@ -222,10 +113,21 @@ const CreateCampaign = () => {
       setMeta("");
       setCampaignImage(null);
       setImagePreview("");
-      
     } catch (e) {
-      console.error("Error:", e);
-      setMsg("❌ Error: " + (e.message || e.reason || e));
+      const em = e?.reason || e?.message || String(e);
+      console.error("CreateCampaign error:", e);
+
+      if (em.toLowerCase().includes("campaign id already exists")) {
+        setMsg("❌ Campaign ID already exists");
+      } else if (em.toLowerCase().includes("initial budget required")) {
+        setMsg("❌ Initial budget is required");
+      } else if (em.toLowerCase().includes("cpc must be > 0")) {
+        setMsg("❌ CPC must be greater than 0");
+      } else if (em.toLowerCase().includes("not authorized")) {
+        setMsg("❌ Not authorized to create this campaign");
+      } else {
+        setMsg("❌ Error: " + em);
+      }
     }
   };
 
@@ -238,7 +140,7 @@ const CreateCampaign = () => {
             {msg}
           </Alert>
         )}
-        
+
         <Form.Group className="mb-3">
           <Form.Label>Campaign ID (unique)</Form.Label>
           <Form.Control
@@ -311,5 +213,3 @@ const CreateCampaign = () => {
 };
 
 export default CreateCampaign;
-
-

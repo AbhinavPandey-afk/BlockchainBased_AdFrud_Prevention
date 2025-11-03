@@ -14,7 +14,7 @@ const RoleAssignment = () => {
     isGateway: null,
     isAuditor: null,
     isPublisher: null,
-    isAdmin: null,
+    isAdvertiser: null,
   });
 
   const requireConnected = async () => {
@@ -28,17 +28,17 @@ const RoleAssignment = () => {
 
   const refreshRoleState = async (addr) => {
     if (!contract || !addr || addr.length < 42) {
-      setRoleState({ isGateway: null, isAuditor: null, isPublisher: null, isAdmin: null });
+      setRoleState({ isGateway: null, isAuditor: null, isPublisher: null, isAdvertiser: null });
       return;
     }
     try {
-      const [g, a, p, ad] = await Promise.all([
+      const [g, a, p, adv] = await Promise.all([
         typeof contract.isGateway === "function" ? contract.isGateway(addr) : Promise.resolve(null),
         typeof contract.isAuditor === "function" ? contract.isAuditor(addr) : Promise.resolve(null),
         typeof contract.isPublisher === "function" ? contract.isPublisher(addr) : Promise.resolve(null),
-        typeof contract.isAdmin === "function" ? contract.isAdmin(addr) : Promise.resolve(null),
+        typeof contract.isAdvertiser === "function" ? contract.isAdvertiser(addr) : Promise.resolve(null),
       ]);
-      setRoleState({ isGateway: g, isAuditor: a, isPublisher: p, isAdmin: ad });
+      setRoleState({ isGateway: g, isAuditor: a, isPublisher: p, isAdvertiser: adv });
     } catch (e) {
       console.warn("Role read failed:", e);
     }
@@ -72,10 +72,10 @@ const RoleAssignment = () => {
             throw new Error("assignPublisher not found in ABI/contract");
           tx = await contract.assignPublisher(address);
           break;
-        case "admin":
-          if (typeof contract.assignAdmin !== "function")
-            throw new Error("assignAdmin not found in ABI/contract");
-          tx = await contract.assignAdmin(address);
+        case "advertiser":
+          if (typeof contract.assignAdvertiser !== "function")
+            throw new Error("assignAdvertiser not found in ABI/contract");
+          tx = await contract.assignAdvertiser(address);
           break;
         default:
           throw new Error("Invalid role selection");
@@ -115,10 +115,10 @@ const RoleAssignment = () => {
             throw new Error("revokePublisher not found in ABI/contract");
           tx = await contract.revokePublisher(address);
           break;
-        case "admin":
-          if (typeof contract.revokeAdmin !== "function")
-            throw new Error("revokeAdmin not found in ABI/contract");
-          tx = await contract.revokeAdmin(address);
+        case "advertiser":
+          if (typeof contract.revokeAdvertiser !== "function")
+            throw new Error("revokeAdvertiser not found in ABI/contract");
+          tx = await contract.revokeAdvertiser(address);
           break;
         default:
           throw new Error("Invalid role selection");
@@ -162,7 +162,7 @@ const RoleAssignment = () => {
                 <option value="Gateway">Gateway</option>
                 <option value="Auditor">Auditor</option>
                 <option value="Publisher">Publisher</option>
-                <option value="Admin">Admin</option>
+                <option value="Advertiser">Advertiser</option>
               </Form.Select>
             </Form.Group>
           </Col>
@@ -202,8 +202,8 @@ const RoleAssignment = () => {
               <Badge bg={roleState.isPublisher ? "success" : "secondary"}>
                 Publisher: {roleState.isPublisher === null ? "-" : roleState.isPublisher ? "Yes" : "No"}
               </Badge>
-              <Badge bg={roleState.isAdmin ? "success" : "secondary"}>
-                Admin: {roleState.isAdmin === null ? "-" : roleState.isAdmin ? "Yes" : "No"}
+              <Badge bg={roleState.isAdvertiser ? "success" : "secondary"}>
+                Advertiser: {roleState.isAdvertiser === null ? "-" : roleState.isAdvertiser ? "Yes" : "No"}
               </Badge>
             </div>
           </Col>
