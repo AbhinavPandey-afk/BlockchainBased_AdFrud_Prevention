@@ -1,5 +1,13 @@
-require('dotenv').config();
-const HDWalletProvider = require('@truffle/hdwallet-provider');
+require("dotenv").config();
+const HDWalletProvider = require("@truffle/hdwallet-provider");
+const https = require("https");
+
+// A keep-alive agent reduces socket churn/timeouts behind corporate or ISP proxies
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 10,
+  timeout: 120000, // 120s idle socket timeout
+});
 
 module.exports = {
   networks: {
@@ -13,28 +21,36 @@ module.exports = {
       provider: () =>
         new HDWalletProvider({
           privateKeys: [process.env.PRIVATE_KEY],
-          providerOrUrl: process.env.SEPOLIA_RPC_URL, // must be HTTPS
+          providerOrUrl: process.env.SEPOLIA_RPC_URL, // HTTPS Alchemy/Infura
+          // HDWalletProvider options
           numberOfAddresses: 1,
           shareNonce: true,
-          pollingInterval: 8000, // slow down polling to reduce provider load
+          pollingInterval: 15000, // slow polling to reduce 429s/timeouts
+          chainId: 11155111,
+          // web3-request options (passed through to request lib used by HDWalletProvider/web3)
+          // These headers/agent mitigate ECONNRESET/ESOCKETTIMEDOUT
+          httpHeaders: { Connection: "keep-alive" },
+          // agent only used by node-fetch/axios paths; some stacks honor it:
+          httpsAgent,
         }),
       network_id: 11155111,
       chain_id: 11155111,
 
-      // Transaction params
-      gas: 8000000,           // keep moderate deployment gas
-      gasPrice: 8e9,          // 8 gwei
+      // Gas controls
+      gas: 7_000_000,              // a bit lower than before; let node estimate if you omit
+      gasPrice: 10e9,              // 10 gwei; adjust if underpriced
 
       // Reliability/timing
       confirmations: 1,
-      timeoutBlocks: 500,     // fewer blocks needed before timeout
-      networkCheckTimeout: 200000, // 200s network checks
+      timeoutBlocks: 2000,         // give more headroom on slow RPCs
+      networkCheckTimeout: 300000, // 300s for slow starts
       skipDryRun: true,
       websocket: false,
-
-      // Truffle extra (some versions honor these)
-      // httpHeaders: { Connection: "keep-alive" },
     },
+  },
+
+  mocha: {
+    timeout: 120000,
   },
 
   compilers: {
@@ -43,10 +59,14 @@ module.exports = {
       settings: {
         optimizer: {
           enabled: true,
-          runs: 1,
+          runs: 200,
         },
-        viaIR: true,
+        viaIR: false, // disable viaIR to shrink bytecode and reduce compile/deploy friction
       },
     },
+  },
+
+  db: {
+    enabled: false,
   },
 };

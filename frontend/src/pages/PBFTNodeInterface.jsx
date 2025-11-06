@@ -9,8 +9,8 @@ import "./AdminDashboard.css";
 const PBFTNodeInterface = () => {
   const { contract, account, connect } = useWallet();
   const [pendingVotes, setPendingVotes] = useState([]);
-  const [decidedItems, setDecidedItems] = useState([]); // NEW: consensus reached but not executed or already decided
-  const [executedItems, setExecutedItems] = useState([]); // NEW: executed
+  const [decidedItems, setDecidedItems] = useState([]);
+  const [executedItems, setExecutedItems] = useState([]);
   const [nodeStats, setNodeStats] = useState(null);
   const [msg, setMsg] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -36,16 +36,24 @@ const PBFTNodeInterface = () => {
     if (!contract) throw new Error("Contract not available");
   };
 
+  // Backfill logs for both old and new consensus events
   const fetchPbftLogs = async (hashes) => {
     try {
       if (!contract || hashes.length === 0) return;
       const provider = contract.provider;
       const iface = contract.interface;
 
+      // Old events (synthesized phases)
       const fProposed = contract.filters.TransactionProposed();
       const fVote = contract.filters.ConsensusVote();
       const fReached = contract.filters.ConsensusReached();
       const fExec = contract.filters.TransactionExecuted();
+
+      // New canonical consensus events
+      const fPrePrep = contract.filters.PrePrepare();
+      const fPrep = contract.filters.Prepare();
+      const fCommit = contract.filters.Commit();
+      const fReply = contract.filters.Reply();
 
       const fromBlock = 0;
       const toBlock = "latest";
@@ -58,16 +66,21 @@ const PBFTNodeInterface = () => {
         });
       };
 
-      const [proposed, votes, reached, executed] = await Promise.all([
+      const [proposed, votes, reached, executed, prepreps, prepares, commits, replies] = await Promise.all([
         pull(fProposed),
         pull(fVote),
         pull(fReached),
         pull(fExec),
+        pull(fPrePrep).catch(() => []),
+        pull(fPrep).catch(() => []),
+        pull(fCommit).catch(() => []),
+        pull(fReply).catch(() => []),
       ]);
 
       const track = new Set(hashes.map((h) => h.toLowerCase()));
 
-      const apply = async (ev) => {
+      // Normalizers
+      const applyOld = async (ev) => {
         const rawTxHash = ev.args.txHash || ev.args.clickHash;
         if (!rawTxHash) return;
         const key = rawTxHash.toLowerCase();
@@ -101,9 +114,59 @@ const PBFTNodeInterface = () => {
         }
       };
 
+      const applyNew = async (ev) => {
+        // New events carry explicit fields
+        if (ev.name === "PrePrepare") {
+          const txHash = ev.args.txHash;
+          if (!track.has(txHash.toLowerCase())) return;
+          pushLog(txHash, {
+            type: "PrePrepare",
+            data: {
+              leader: ev.args.leader,
+              requiredVotes: ev.args.requiredVotes.toString(),
+              proposalTime: ev.args.proposalTime.toString(),
+            },
+            blockNumber: ev.blockNumber,
+          });
+        } else if (ev.name === "Prepare") {
+          const txHash = ev.args.txHash;
+          if (!track.has(txHash.toLowerCase())) return;
+          pushLog(txHash, {
+            type: "Prepare",
+            data: { node: ev.args.node, approve: ev.args.vote, blockTime: ev.args.blockTime.toString() },
+            blockNumber: ev.blockNumber,
+          });
+        } else if (ev.name === "Commit") {
+          const txHash = ev.args.txHash;
+          if (!track.has(txHash.toLowerCase())) return;
+          pushLog(txHash, {
+            type: "Commit",
+            data: { approved: ev.args.approved, voteCount: ev.args.voteCount.toString(), blockTime: ev.args.blockTime.toString() },
+            blockNumber: ev.blockNumber,
+          });
+        } else if (ev.name === "Reply") {
+          const txHash = ev.args.txHash;
+          if (!track.has(txHash.toLowerCase())) return;
+          pushLog(txHash, {
+            type: "Reply",
+            data: {
+              publisher: ev.args.publisher,
+              gateway: ev.args.gateway,
+              cpcWei: ev.args.cpcWei.toString(),
+              timestamp: ev.args.timestamp.toString(),
+            },
+            blockNumber: ev.blockNumber,
+          });
+        }
+      };
+
       for (const ev of [...proposed, ...votes, ...reached, ...executed]) {
         // eslint-disable-next-line no-await-in-loop
-        await apply(ev);
+        await applyOld(ev);
+      }
+      for (const ev of [...prepreps, ...prepares, ...commits, ...replies]) {
+        // eslint-disable-next-line no-await-in-loop
+        await applyNew(ev);
       }
     } catch (e) {
       console.error("PBFT log backfill error:", e);
@@ -142,24 +205,18 @@ const PBFTNodeInterface = () => {
           executed: d.executed,
         };
 
-        // Open/pending bucket for voting
         if (!d.executed && !d.consensusReached && !hasVoted && !isExpired) {
           toVote.push(base);
         }
-
-        // Decided bucket (show timeline even if already voted or consensus done)
         if (d.consensusReached && !d.executed) {
           decided.push(base);
         }
-
-        // Executed bucket
         if (d.executed) {
           executed.push(base);
         }
       }
 
       setPendingVotes(toVote);
-      // Keep only a recent window for decided/executed to avoid very long lists
       setDecidedItems(decided.slice(-25));
       setExecutedItems(executed.slice(-25));
 
@@ -178,7 +235,6 @@ const PBFTNodeInterface = () => {
       setNodeStats({
         isActive: stats.isActive,
         stake: ethers.utils.formatEther(stats.stake),
-        endpoint: stats.endpoint,
         votesParticipated: stats.votesParticipated.toString(),
         correctVotes: stats.correctVotes.toString(),
         accuracyPercentage: stats.accuracyPercentage.toString(),
@@ -200,7 +256,6 @@ const PBFTNodeInterface = () => {
       await tx.wait();
       setMsg(`✅ Vote ${approve ? "APPROVED" : "REJECTED"} for transaction ${txHash.substring(0, 10)}...`);
 
-      // Refresh all buckets and stats
       fetchAllBuckets();
       fetchNodeStats();
     } catch (e) {
@@ -225,6 +280,7 @@ const PBFTNodeInterface = () => {
       fetchAllBuckets();
       fetchNodeStats();
 
+      // Old events (synthesized)
       const onProposed = async (txHash, campaignId, publisher, evt) => {
         try {
           const d = await contract.getPendingTransactionDetails(txHash);
@@ -259,15 +315,60 @@ const PBFTNodeInterface = () => {
       contract.on(voteFilter, onVote);
       contract.on(executedFilter, onExecuted);
 
-      const interval = setInterval(() => {
-        fetchAllBuckets();
-      }, 30000);
+      // New canonical consensus events
+      const onPrePrepare = (txHash, campaignId, publisher, leader, requiredVotes, proposalTime, evt) => {
+        pushLog(txHash, {
+          type: "PrePrepare",
+          data: { leader, requiredVotes: requiredVotes.toString(), proposalTime: proposalTime.toString() },
+          blockNumber: evt.blockNumber,
+        });
+      };
+      const onPrepare = (txHash, node, vote, blockTime, evt) => {
+        pushLog(txHash, {
+          type: "Prepare",
+          data: { node, approve: vote, blockTime: blockTime.toString() },
+          blockNumber: evt.blockNumber,
+        });
+      };
+      const onCommit = (txHash, approved, voteCount, blockTime, evt) => {
+        pushLog(txHash, {
+          type: "Commit",
+          data: { approved, voteCount: voteCount.toString(), blockTime: blockTime.toString() },
+          blockNumber: evt.blockNumber,
+        });
+      };
+      const onReply = (txHash, campaignId, publisher, gateway, cpcWei, timestamp, evt) => {
+        pushLog(txHash, {
+          type: "Reply",
+          data: { publisher, gateway, cpcWei: cpcWei.toString(), timestamp: timestamp.toString() },
+          blockNumber: evt.blockNumber,
+        });
+      };
+
+      const prePrepFilter = contract.filters.PrePrepare();
+      const prepareFilter = contract.filters.Prepare();
+      const commitFilter = contract.filters.Commit();
+      const replyFilter = contract.filters.Reply();
+
+      // Attach new listeners but guard if ABI doesn’t have them (older deployments)
+      try { contract.on(prePrepFilter, onPrePrepare); } catch {}
+      try { contract.on(prepareFilter, onPrepare); } catch {}
+      try { contract.on(commitFilter, onCommit); } catch {}
+      try { contract.on(replyFilter, onReply); } catch {}
+
+      const interval = setInterval(() => { fetchAllBuckets(); }, 30000);
 
       return () => {
         contract.off(proposedFilter, onProposed);
         contract.off(consensusFilter, onReached);
         contract.off(voteFilter, onVote);
         contract.off(executedFilter, onExecuted);
+
+        try { contract.off(prePrepFilter, onPrePrepare); } catch {}
+        try { contract.off(prepareFilter, onPrepare); } catch {}
+        try { contract.off(commitFilter, onCommit); } catch {}
+        try { contract.off(replyFilter, onReply); } catch {}
+
         clearInterval(interval);
       };
     }
@@ -360,10 +461,10 @@ const PBFTNodeInterface = () => {
                       </span>
                       <code className="me-2">blk #{l.blockNumber || "-"}</code>
                       <span className="text-muted">
-                        {l.type === "PrePrepare" && `leader=${l.data.leader}, required=${l.data.requiredVotes}`}
+                        {l.type === "PrePrepare" && `leader=${l.data.leader}${l.data.requiredVotes ? `, required=${l.data.requiredVotes}` : ""}`}
                         {l.type === "Prepare" && `node=${l.data.node}, approve=${l.data.approve ? "yes" : "no"}`}
                         {l.type === "Commit" && `approved=${l.data.approved ? "yes" : "no"}, votes=${l.data.voteCount}`}
-                        {l.type === "Reply" && `publisher=${l.data.publisher}`}
+                        {l.type === "Reply" && `publisher=${l.data.publisher}${l.data.gateway ? `, gateway=${l.data.gateway.substring(0,10)}...` : ""}`}
                       </span>
                     </div>
                   ))}
@@ -479,7 +580,7 @@ const PBFTNodeInterface = () => {
           </Col>
         </Row>
 
-        {/* NEW: Recent PBFT activity (decided + executed) */}
+        {/* Recent PBFT activity */}
         <Row className="g-4 mt-4">
           <Col md={12}>
             <Card className="glass-card border-0">
